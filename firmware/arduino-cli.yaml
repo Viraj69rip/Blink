@@ -1,0 +1,8 @@
+# Local build configuration for the installed Arduino IDE/CLI on this PC.
+directories:
+  data: C:\Users\SHIVANYA SALES\AppData\Local\Arduino15
+  downloads: C:\Users\SHIVANYA SALES\AppData\Local\Arduino15\staging
+  user: C:\Users\SHIVANYA SALES\Documents\Arduino
+board_manager:
+  additional_urls:
+    - https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json

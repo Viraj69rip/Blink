@@ -1,0 +1,46 @@
+name: Build BLINK release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+      - name: Build ESP32-C3 firmware
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+          arduino-cli lib install U8g2 NimBLE-Arduino "Adafruit MPU6050" "Adafruit Unified Sensor" "Adafruit BusIO"
+          arduino-cli compile --fqbn esp32:esp32:esp32c3 --output-dir release/firmware firmware/BLINK_Robot
+          cp release/firmware/BLINK_Robot.ino.bin "release/BLINK_Robot-${GITHUB_REF_NAME}.bin"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Build Android APK configured for this repository
+        working-directory: blink_app
+        run: |
+          flutter pub get
+          flutter build apk --release --dart-define=BLINK_GITHUB_REPOSITORY=${{ github.repository }}
+          cp build/app/outputs/flutter-apk/app-release.apk "../release/BLINK-Companion-${GITHUB_REF_NAME}.apk"
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/BLINK_Robot-*.bin
+            release/BLINK-Companion-*.apk

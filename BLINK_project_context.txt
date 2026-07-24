@@ -1,0 +1,279 @@
+# BLINK - Robot Companion App & ESP32-C3 Firmware
+## Project Context & Handoff Prompt
+
+> **Current implementation note (v3.1.0, 2026-07-24):** `context.md` is the
+> concise source of truth for the current build. Firmware now supports BLE OTA
+> updates (`...26ac`/`...26ad`/`...26ae`), a persisted app-side `.bin` picker
+> with a daily reminder, a 128×64 pixel-matched drawing canvas, strengthened
+> MPU shake detection, optional passive-buzzer melodies, and the simplified
+> menu (Focus, Mario Clock, BLE, HW Info, Sound Test, Normal Face, Go Back).
+> Weather and standalone Time are removed. Older sections below describe the
+> pre-v3.1 implementation and should not override this note.
+
+**To the AI Assistant:**
+Read this file before making changes. BLINK is a Flutter companion app + ESP32-C3 robot firmware. Both are fully implemented: the app controls the robot over BLE, and the firmware runs a complete face-animation state machine with on-device touch menu, Mario clock, HW info screen, drawing mode, and more.
+
+---
+
+### 1. Design Language (CRITICAL)
+
+The app follows a Nothing OS-inspired, monochrome hardware aesthetic:
+
+- **Background:** pure black (`#000000`).
+- **Cards:** deep charcoal (`#121212`), subtle white border at low opacity, and typically `24px` rounded corners.
+- **Accent:** red (`#FF3333`) for active states, the connection indicator, and selected controls. Everything else should remain monochrome.
+- **Typography:** platform-native `sans-serif` for UI text and `monospace` for status values, timers, and versions. This replaced the previous runtime-loaded Google Fonts setup for faster, reliable offline startup; keep the current hierarchy and letter spacing if adjusting text styles.
+- **Glass:** large cards use a static painted/glass-gradient treatment rather than `BackdropFilter`. The bottom navigation also uses a static high-opacity gradient glass treatment. Do not reintroduce page-sized or scrolling `BackdropFilter` layers without profiling them first.
+
+### 2. Architecture & State Management
+
+- **Framework:** Flutter (Dart SDK `3.12.2`, Flutter `3.44.6`).
+- **State management:** `provider` / `ChangeNotifier`; central state lives in `RobotStateProvider`.
+- **Navigation:** `main.dart` uses a `PageView.builder` with four tabs and an overlaid `BlinkNavBar`.
+  - Tabs are built on demand to reduce startup layout and paint work.
+  - `PageStorageKey`s preserve visited-tab scroll state.
+  - `TickerMode` disables offscreen tab animations.
+  - Horizontal swiping is intentionally disabled; navigation is controlled by the bottom bar.
+- **Orientation:** portrait up only.
+- **System UI:** transparent status bar and black Android navigation bar.
+
+### 3. Flutter App — Files and Components
+
+All Flutter source is under `C:\all html project\BLINK\blink_app\lib\`.
+
+**Core setup and theme**
+
+- `main.dart`: entry point, Provider setup, lazy `PageView.builder`, floating navigation.
+- `theme/blink_theme.dart`: `BlinkColors` (background, surface, accent, text tiers), `BlinkTypography` (native sans-serif + monospace text styles), `BlinkDecorations` (card, cardActive, cardSubtle).
+- `theme/blink_constants.dart`: layout spacing, animation durations/curves, robot face constants (blink interval, night hours), focus timer defaults.
+
+**State and services**
+
+- `providers/robot_state_provider.dart`: connection state, battery level, expression state, touch/radar toggles, focus timer, draw mode, weather/time sync wrappers.
+- `services/ble_manager.dart`: real BLE implementation using `flutter_blue_plus`. Handles scan, connect, GATT discovery, and exposes:
+  - `syncTime()` — sends Unix timestamp to time characteristic
+  - `sendCommand(String)` — sends command strings (FOCUS, IDLE, DRAW, CLEAR, W:SUN, SW:12:34, TOUCH:ON…)
+  - `sendDrawLine(x1,y1,x2,y2)` — sends OLED-mapped line segments to draw characteristic
+  - State notification subscription for live robot animation snapshots
+- `models/robot_animation_snapshot.dart`: parsed robot state data from BLE notifications.
+
+**Widgets**
+
+- `widgets/glass_container.dart`: static painted liquid-glass surface for cards. Avoids `BackdropFilter`.
+- `widgets/toggle_card.dart`: bento-style hardware-toggle cards.
+- `widgets/robot_face.dart`: blinking robot face with `CustomPaint` inside a `RepaintBoundary`.
+- `widgets/dotted_logo.dart`: custom-painted dot-matrix BLINK logo.
+- `widgets/pulsing_dot.dart`: connection indicator with cached glow + `FadeTransition`.
+- `widgets/focus_timer_overlay.dart`: Pomodoro modal with countdown and controls.
+- `widgets/drawing_canvas.dart` (433 lines): OLED-mapped drawing canvas with three tools:
+  - **Pen** — freehand drawing, mapped to 128×64, BLE-throttled at ~70ms
+  - **Emoji** — 16 emoji stamps (❤️⭐😀😎🔥✨💀🤖👾🎮⚡🌙☀️🎵💎🐱), placed by tapping canvas, sent as star pattern line segments to OLED
+  - **Text** — type up to 16 chars in a dialog, tap canvas to place, sent as baseline+tick pattern to OLED
+  - Includes `_SketchPainter` that renders strokes, emoji stamps, and text stamps on the local canvas
+
+**Screens**
+
+- `screens/command_center_screen.dart`: dashboard, battery/status, robot-face preview, toggles, focus timer, and deploy button.
+- `screens/expression_vault_screen.dart`: expression-pack catalogue with expand/collapse interactions.
+- `screens/drawing_screen.dart` (283 lines): drawing page with tool toolbar (Pen/Emoji/Text selectors), emoji picker bottom sheet, text input dialog, clear/exit buttons. All styled with Nothing OS design language.
+- `screens/settings_screen.dart`: device, display, sensor, and app settings.
+- `screens/about_screen.dart`: logo, specs, and credits.
+- `screens/splash_screen.dart`: animated splash/loading screen.
+- `navigation/blink_nav_bar.dart`: four-tab floating navigation with gradient glass effect in a `RepaintBoundary`.
+
+### 4. ESP32-C3 Firmware
+
+All firmware source: `C:\all html project\BLINK\firmware\BLINK_Robot\`
+
+**Files:**
+- `BLINK_Robot.ino` (1864 lines, ~59KB): single-file firmware with everything inlined.
+- `FLASH_README.txt`: setup guide for flashing (wiring, libraries, Arduino IDE config).
+
+**Hardware:**
+- ESP32-C3 SuperMini
+- 0.96" SSD1306 OLED (128×64, I2C) — SDA=GPIO8, SCL=GPIO9
+- MPU6050 accelerometer (I2C, same bus)
+- Capacitive touch sensor (GPIO 4)
+- LiPo battery with 2:1 voltage divider (GPIO 2)
+
+**Dependencies (Arduino libraries):**
+- U8g2 (display)
+- NimBLE-Arduino (BLE)
+- Adafruit MPU6050 + Adafruit Unified Sensor + Adafruit BusIO (accelerometer)
+
+**State machine:** non-blocking ~50 FPS render loop with states:
+- `STATE_BOOT` → animated "BLINK" text, then idle
+- `STATE_IDLE` → breathing face, blinking eyes, parabolic smile, look-around, optional night mode (yawn→sleep)
+- `STATE_TICKLED` → happy bouncing face with arc eyes, smile, fixed sparkle marks, "hehe~" text
+- `STATE_DIZZY` → spiral eyes, screen shake, wavy mouth, "wooozy" text (triggered by MPU6050 shake)
+- `STATE_YAWN` → squinting eyes, oval mouth, transitions to sleep
+- `STATE_SLEEPING` → closed eyes, floating Zzz, moon icon
+- `STATE_APP_MODE` → full-screen mode for Focus timer, Weather, Time, BLE status, Date, Mario Clock, HW Info, or Draw mode
+
+**Display modes** (accessible via on-device touch menu):
+
+| # | Menu Item | Display Mode | Description |
+|---|---|---|---|
+| 0 | Focus Mode | `DISPLAY_FOCUS` | Pomodoro timer (receives "SW:MM:SS" from app) |
+| 1 | Weather | `DISPLAY_WEATHER` | Shows weather code (receives "W:XXX" from app) |
+| 2 | Time | `DISPLAY_TIME` | Large clock (synced via BLE Unix timestamp) |
+| 3 | BLE Status | `DISPLAY_BLE` | Shows PAIRED/NOT PAIRED status |
+| 4 | Date | `DISPLAY_DATE` | Shows DD/MM/YYYY date |
+| 5 | Normal Face | `DISPLAY_NORMAL` | Default animated robot face |
+| 6 | Mario Clock | `DISPLAY_MARIO_CLOCK` | Animated Mario clock (see below) |
+| 7 | HW Info | `DISPLAY_HW_INFO` | ESP32 hardware stats (see below) |
+
+**Mario Clock (lines ~808–1100):**
+- Ported from SmallOLED-PCMonitor project (Adafruit SSD1306 → U8g2 API translation)
+- 8×10 pixel Mario sprite with 2-frame walk cycle and jump pose
+- Animation state machine: IDLE → WALKING → JUMPING → WALKING_OFF
+- At second 56 of each minute, Mario walks from left to each digit that will change, jumps underneath it, bumps it (digit bounces upward with gravity physics), then walks off-screen right
+- Large font time display (`u8g2_font_logisoso22_tr`) with per-digit bounce offset
+- Blinking colon (500ms toggle), date at top, ground line at Y=63
+- "hold 2s=exit" hint shown for first 5 seconds
+
+**HW Info Screen (lines ~1103–1200):**
+- Header: "BLINK" label + uptime counter + synced time
+- 4 stat rows with labels, filled progress bars, and values:
+  - **RAM:** `(totalHeap - freeHeap) / totalHeap × 100%` from `ESP.getHeapSize()` / `ESP.getFreeHeap()`
+  - **CPU:** connection-based heuristic (4% idle, 12% BLE active)
+  - **GPU:** chip temperature from `temperatureRead()`, mapped to 20–80°C bar range
+  - **DISK:** flash usage from `ESP.getSketchSize()` / `ESP.getFreeSketchSpace()`
+- Bar rendering: filled `drawBox` + dotted empty area + `drawFrame` border
+
+**Touch interaction:**
+
+| Gesture | In Normal/Menu | In Mario Clock / HW Info |
+|---|---|---|
+| Single tap | Tickle animation | No effect (suppressed) |
+| Double tap | (existing behavior) | No effect |
+| Triple tap | Opens menu / navigates / selects | Opens menu / navigates / selects |
+| Hold 2 seconds | No effect | **Exits to normal face** |
+
+- Long-press detection in `pollTouchGestures()`: tracks `touchDownAt` duration, fires at ≥2000ms
+- Long-press release is suppressed from registering as a tap (prevents accidental tickle/menu)
+
+**BLE GATT service (UUID: `4fafc201-...`):**
+- Time characteristic (`...26a8`): receives Unix timestamp string, calls `settimeofday()`
+- Command characteristic (`...26a9`): receives command strings (FOCUS, IDLE, DRAW, CLEAR, W:XXX, SW:MM:SS, TOUCH:ON/OFF)
+- Draw characteristic (`...26aa`): receives "X1,Y1,X2,Y2" line segments, stored in `DrawSeg` buffer
+- State characteristic (`...26ab`): notifies robot animation state to the app
+
+**Drawing mode:**
+- Entered via "DRAW" command from app or Draw tab
+- Lines stored in a `DrawSeg` buffer (max 256 segments)
+- Rendered each frame in APP_MODE when `drawMode == true`
+- Double-tap touch sensor exits draw mode
+- "CLEAR" command clears the draw buffer
+
+### 5. Performance and Size Optimizations Completed (2026-07-15)
+
+1. **Removed expensive navigation blur** — replaced `BackdropFilter` with gradient-painted glass.
+2. **Deferred tab creation** — `PageView.builder` + narrow `RepaintBoundary`s around robot face and pulsing dot.
+3. **Compositor-friendly connection pulse** — `FadeTransition` instead of per-frame color/shadow rebuilds.
+4. **Removed runtime Google Font loading** — native `sans-serif` / `monospace` for offline-first startup.
+5. **Android release shrinking** — `isMinifyEnabled = true`, `isShrinkResources = true`, Material Icons tree-shaken 99.4%.
+
+### 6. Firmware Bug Fixes (2026-07-19)
+
+- **Fixed random dots in tickled animation:** Removed 5 orbiting sparkle pixels in `drawTickledFace()` that used `sinf`/`cosf` to scatter dots at varying positions — these looked like random noise on the 0.96" OLED. Replaced with 2 small fixed star/sparkle marks at the top corners of the screen.
+
+### 7. Build Outputs and Size Results
+
+| Target | Output | Size |
+|---|---|---:|
+| Modern Android phones (recommended) | `BLINK_Companion_App_arm64_release.apk` | **16.66 MiB** |
+| 32-bit ARM devices | `blink_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk` | 14.1 MiB |
+| x86_64 emulator | `blink_app/build/app/outputs/flutter-apk/app-x86_64-release.apk` | 17.9 MiB |
+| Firmware zip (for friend) | `BLINK_Firmware_v2.zip` | 0.02 MiB |
+
+Build commands:
+
+```powershell
+$env:PATH = "C:\tools\PortableGit\cmd;C:\tools\flutter\bin;" + $env:PATH
+cd 'C:\all html project\BLINK\blink_app'
+flutter pub get
+flutter build apk --release --split-per-abi
+```
+
+Firmware zip:
+```powershell
+Compress-Archive -Path "c:\all html project\BLINK\firmware\BLINK_Robot" -DestinationPath "c:\all html project\BLINK\BLINK_Firmware_v2.zip" -Force
+```
+
+**Signing note:** the current Android release build uses the debug signing key. Configure a private release keystore before publishing.
+
+### 8. Environment Details (Windows)
+
+- Workspace: `C:\all html project\BLINK`
+- Flutter app: `C:\all html project\BLINK\blink_app`
+- Firmware: `C:\all html project\BLINK\firmware\BLINK_Robot`
+- Flutter SDK: `C:\tools\flutter`
+- PortableGit: `C:\tools\PortableGit`
+- Flutter is not globally on PATH. `blink_app\run_blink.bat` injects the relevant paths before running Flutter commands.
+- Android SDK: `C:\Users\SHIVANYA SALES\AppData\Local\Android\sdk`
+- Android NDK: `C:\Users\SHIVANYA SALES\AppData\Local\Android\sdk\ndk\28.2.13676358`
+
+### 9. Current Status and Next Steps
+
+**Status: Fully functional prototype — both firmware and app are feature-complete.**
+
+- **Firmware (1864 lines):** complete state machine with 8 display modes, Mario clock animation, HW info screen, drawing mode, BLE GATT, MPU6050 shake detection, touch menu with long-press exit, RTC sync, night mode.
+- **App (16+ screens/widgets):** full BLE connectivity, dashboard, expressions, drawing with pen/emoji/text tools, settings, focus timer, weather/time sync.
+- **Drawing tools (new 2026-07-19):** Pen (freehand), Emoji (16 stamps with picker), Text (typed text placement) — all rendered locally and sent as line segments to OLED via BLE.
+- **Android packaging:** optimized split release APKs available; use the arm64 APK for current phones.
+- **Firmware sharing:** `BLINK_Firmware_v2.zip` contains everything a friend needs to flash, including `FLASH_README.txt` with wiring, library, and Arduino IDE setup instructions.
+
+**Potential next steps:**
+- Real PC stats over BLE for the HW Info screen (currently shows ESP32 internal stats)
+- Mario clock encounter system (Goombas, Koopas, etc. from SmallOLED-PCMonitor)
+- 12-hour format toggle for Mario clock
+- Additional clock styles (Pac-Man, Tetris, etc.)
+- Production signing and Play Store AAB upload
+
+### 10. Mochi-Style Idle Animations (2026-07-20)
+
+Added a **21-animation idle cycling system** inspired by The Mochi firmware. The robot now cycles through varied personality micro-animations during idle instead of showing a single static face.
+
+**Animation Pool (index 0–20):**
+
+| # | Animation | Description |
+|---|---|---|
+| 0 | Default Face | Original breathing/blinking face (highest weight) |
+| 1 | Curious Look | Eyes shift far left/right, raised eyebrows, "hmm?" |
+| 2 | Winking | One eye winks, tongue sticks out, ";P" |
+| 3 | Stargazing | Eyes look up, twinkling stars across top |
+| 4 | Bouncy | Exaggerated squash-and-stretch bounce |
+| 5 | Sleepy Blink | Heavy eyelids, slow blinks, droopy brows, "..." |
+| 6 | Cat Face | Slit pupils, whiskers, cat ears, nose, "nya~" |
+| 7 | Sparkle Eyes | Pulsing filled eyes with star cut-outs, "ooh!" |
+| 8 | Confused | Uneven eyes (one wide, one squinted), floating "?" |
+| 9 | Whistling | O-mouth, floating musical notes, eyes looking away |
+| 10 | Nervous | Darting eyes, worried brows, sweat drop, "ehehe.." |
+| 11 | Cool Shades | Sunglasses with lens glint, asymmetric smirk, "B)" |
+| 12 | Chewing | Arc eyes, chewing mouth, puffing cheeks, "nom nom" |
+| 13 | Peeking | Face slides up from bottom edge, peeks around |
+| 14 | Heart Bubbles | Normal face with floating heart particles |
+| 15 | Robot Scan | Rectangular eyes with sweeping scan line, antenna |
+| 16 | Pixel Dance | Tiny character with 4-frame dance cycle, "groove~" |
+| 17 | Dreamy | Half-lidded eyes, floating thought bubble cloud |
+| 18 | Excited Shake | Vibrating face, wide eyes, bouncing "!" marks |
+| 19 | Tongue Out | Playful face with wiggling tongue, "bleh~" |
+| 20 | Snoring | Closed eyes, expanding/contracting snore bubble |
+
+**Cycling System:**
+- Weighted random selection (default face has highest weight = 5)
+- 5–10 second cycle duration (randomized per animation)
+- Blink-wipe transition (horizontal bars close/open like eyelids, 400ms)
+- No-repeat: never plays the same animation twice in a row
+- Night mode (22:00–06:00): restricted to calm animations only (0, 3, 5, 14, 17, 20)
+- Display mode overlays (weather, time, BLE, date) work with any animation
+
+**BLE Commands (new):**
+- `ANIM:NEXT` — skip to next random idle animation
+- `ANIM:0` through `ANIM:20` — force specific animation
+- `ANIM:SPEED:FAST` — cycle every 3–5 seconds
+- `ANIM:SPEED:SLOW` — cycle every 8–15 seconds
+- `ANIM:SPEED:NORMAL` — cycle every 5–10 seconds (default)
+
+**Implementation:** All animations are procedurally rendered using U8g2 drawing primitives. No GIF files, no SD card, no external assets. ~870 lines of new code added. Both firmware copies (`BLINK_Robot_v2_share.ino` and `firmware/BLINK_Robot/BLINK_Robot.ino`) are kept in sync.

@@ -1,0 +1,32 @@
+# ---------- OS / Editor ----------
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+*.swo
+*~
+
+# ---------- IDE ----------
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+
+# ---------- Large root-level build artifacts ----------
+# APKs are distributed via GitHub Releases, not tracked in git
+*.apk
+
+# ---------- Flutter (blink_app) ----------
+# The existing blink_app/.gitignore handles most Flutter specifics.
+# These catch anything that leaks to root or isn't covered:
+blink_app/build/
+blink_app/.dart_tool/
+blink_app/.flutter-plugins
+blink_app/.flutter-plugins-dependencies
+blink_app/.packages
+
+# ---------- ESP toolchain ----------
+ESP code/toolchain/
+
+# ---------- Gemini / AI context (optional, personal) ----------
+.gemini/

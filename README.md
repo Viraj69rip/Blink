@@ -1,6 +1,10 @@
-# BLINK 🤖
-
-**A companion Android app + ESP32-C3 robot firmware** — your little desktop robot with personality.
+<div align="center">
+  <h1>BLINK 🤖</h1>
+  <p><b>A companion Android app + ESP32-C3 robot firmware — your little desktop robot with personality.</b></p>
+  <p>
+    <a href="https://viraj69rip.github.io/Blink/"><strong>🌐 Try the Live OLED Simulator & Website</strong></a>
+  </p>
+</div>
 
 BLINK is a tiny robot that lives on your desk. It has an animated face with 21 idle micro-animations, responds to touch and shake, plays Mario clock, draws on its OLED, and connects to your phone over Bluetooth.
 

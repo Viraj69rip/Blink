@@ -29,18 +29,15 @@ export default function Navbar() {
       <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <a href="#" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <svg width="32" height="32" viewBox="0 0 40 40" fill="none">
-            <defs>
-              <linearGradient id="logo" x1="0" y1="0" x2="40" y2="40">
-                <stop stopColor="#6366f1" />
-                <stop offset="1" stopColor="#a855f7" />
-              </linearGradient>
-            </defs>
-            <rect width="40" height="40" rx="10" fill="url(#logo)" />
-            <circle cx="15" cy="17" r="4" fill="white" />
-            <circle cx="25" cy="17" r="4" fill="white" />
-            <path d="M16 26c1.8 1.5 6.2 1.5 8 0" stroke="white" strokeWidth="2.5" strokeLinecap="round" />
+            <rect width="40" height="40" rx="8" fill="#0a0a0f"/>
+            <rect x="2" y="2" width="36" height="36" rx="6" fill="none" stroke="white" strokeWidth="1.5" strokeDasharray="2 2"/>
+            <circle cx="14" cy="16" r="3" fill="white"/>
+            <circle cx="26" cy="16" r="3" fill="white"/>
+            <circle cx="14" cy="16" r="1" fill="#0a0a0f"/>
+            <circle cx="26" cy="16" r="1" fill="#0a0a0f"/>
+            <path d="M16 25c1.5 1.2 5.5 1.2 7 0" stroke="white" strokeWidth="1.5" strokeLinecap="round" fill="none" strokeDasharray="2 1.5"/>
           </svg>
-          <span style={{ fontFamily: 'var(--font-display)', fontSize: 22, color: 'white' }}>BLINK</span>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: 22, color: 'white', letterSpacing: '0.04em' }}>BLINK</span>
         </a>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 32 }}>

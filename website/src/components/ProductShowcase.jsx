@@ -1,7 +1,10 @@
+import { useState } from 'react'
 import { motion } from 'framer-motion'
+import PaymentModal from './PaymentModal'
 
 const tiers = [
   {
+    key: 'basic',
     name: 'BLINK Basic',
     tagline: 'Your desk companion, ready to go.',
     price: '₹3,999',
@@ -18,6 +21,7 @@ const tiers = [
     ],
   },
   {
+    key: 'wireless',
     name: 'BLINK Wireless',
     tagline: 'Untethered freedom with built-in battery.',
     price: '₹4,999',
@@ -33,6 +37,7 @@ const tiers = [
     ],
   },
   {
+    key: 'ai',
     name: 'BLINK AI',
     tagline: 'Voice-powered AI assistant on your desk.',
     price: '₹7,999',
@@ -61,6 +66,14 @@ const itemVariants = {
 }
 
 export default function ProductShowcase() {
+  const [modalOpen, setModalOpen] = useState(false)
+  const [selectedVariant, setSelectedVariant] = useState('basic')
+
+  const openOrder = (key) => {
+    setSelectedVariant(key)
+    setModalOpen(true)
+  }
+
   return (
     <section id="pricing" className="section" style={{ position: 'relative' }}>
       <div className="container">
@@ -174,21 +187,21 @@ export default function ProductShowcase() {
                 ))}
               </ul>
 
-              <a
-                href="#"
-                onClick={(e) => { e.preventDefault(); alert('Order now — contact via GitHub or email.') }}
+              <button
+                onClick={() => openOrder(tier.key)}
                 className={tier.highlight ? 'btn-primary' : 'btn-secondary'}
-                style={{ width: '100%', justifyContent: 'center', marginTop: 32, textAlign: 'center' }}
+                style={{ width: '100%', justifyContent: 'center', marginTop: 32, textAlign: 'center', border: tier.highlight ? 'none' : '1px solid rgba(255,255,255,0.18)' }}
               >
                 Order Now
                 <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
                 </svg>
-              </a>
+              </button>
             </motion.div>
           ))}
         </motion.div>
       </div>
+      <PaymentModal open={modalOpen} onClose={() => setModalOpen(false)} />
     </section>
   )
 }

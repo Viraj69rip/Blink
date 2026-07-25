@@ -82,6 +82,15 @@ static const int OLED_W = 128;
 static const int OLED_H = 64;
 
 // ─── Hardware ──────────────────────────────────────────────────────────────
+// Sine lookup table (64 entries, 0-63 → sin(0..2π) scaled -31..+31)
+static const int8_t SIN_LUT[64] = {
+  0, 3, 6, 9, 12, 15, 18, 21, 24, 26, 28, 30, 31, 31, 31, 31,
+  31, 30, 28, 26, 24, 21, 18, 15, 12, 9, 6, 3, 0, -3, -6, -9,
+  -12, -15, -18, -21, -24, -26, -28, -30, -31, -31, -31, -31,
+  -31, -30, -28, -26, -24, -21, -18, -15, -12, -9, -6, -3, 0,
+  3, 6, 9, 12, 15, 18
+};
+
 // SSD1306 128x64 I2C, hardware I2C, no reset pin
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 Adafruit_MPU6050 mpu;
@@ -2405,7 +2414,7 @@ void drawAppModeScreen(uint32_t t) {
   }
 
   if (displayMode == DISPLAY_BLE) {
-    float sec = t / 1000.0;
+    unsigned phase = t / 20;
     u8g2.setFont(u8g2_font_6x12_tr);
     u8g2.drawStr(44, 12, "BLINK");
     u8g2.setFont(u8g2_font_5x7_tr);
@@ -2414,22 +2423,25 @@ void drawAppModeScreen(uint32_t t) {
     } else {
       u8g2.drawStr(30, 24, "DISCONNECTED");
     }
-    int barCount = 5;
-    for (int i = 0; i < barCount; i++) {
-      float bh = 18.0 * ((i + 1) / (float)barCount) + sin(sec * 3.0 + i * 1.2) * 3.0;
+    for (int i = 0; i < 5; i++) {
+      int si = (phase / 8 + i * 13) & 63;
+      int sv = SIN_LUT[si];
+      int base = (i + 1) * 3 + 2;
+      int bh = base + sv * 8 / 31;
       if (bh < 2) bh = 2;
+      if (bh > 32) bh = 32;
       int bx = 16 + i * 20;
-      int by = 52 - (int)bh;
+      int by = 54 - bh;
       if (!bleConnected && i > 2) {
         u8g2.setDrawColor(0);
       }
-      u8g2.drawBox(bx, by, 8, (int)bh);
+      u8g2.drawBox(bx, by, 8, bh);
       u8g2.setDrawColor(1);
     }
-    float dotX = 64 + cos(sec * 1.5) * 10;
-    float dotY = 38 + sin(sec * 1.8) * 6;
-    u8g2.drawBox((int)dotX - 1, (int)dotY - 1, 3, 3);
-    u8g2.drawFrame((int)dotX - 3, (int)dotY - 3, 7, 7);
+    int dx = 64 + SIN_LUT[(phase / 10 + 16) & 63] * 10 / 31;
+    int dy = 38 + SIN_LUT[(phase / 8) & 63] * 6 / 31;
+    u8g2.drawBox(dx - 1, dy - 1, 3, 3);
+    u8g2.drawFrame(dx - 4, dy - 4, 9, 9);
     return;
   }
 

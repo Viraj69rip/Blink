@@ -180,7 +180,7 @@ class _SplashScreenState extends State<SplashScreen>
                     opacity: _versionOpacity.value,
                     child: Center(
                       child: Text(
-                        'v4.0.0',
+                        'v4.0.1',
                         style: BlinkTypography.mono.copyWith(
                           fontSize: 11,
                           color: BlinkColors.textTertiary.withValues(alpha: 0.5),

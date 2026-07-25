@@ -31,8 +31,8 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = maxOf(flutter.minSdkVersion, 21)
         targetSdk = flutter.targetSdkVersion
-        versionCode = 4
-        versionName = "4.0.0"
+        versionCode = 5
+        versionName = "4.0.1"
         ndk {
             abiFilters.clear()
         }

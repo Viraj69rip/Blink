@@ -34,8 +34,12 @@ jobs:
         working-directory: blink_app
         run: |
           flutter pub get
-          flutter build apk --release --dart-define=BLINK_GITHUB_REPOSITORY=${{ github.repository }}
-          cp build/app/outputs/flutter-apk/app-release.apk "../release/BLINK-Companion-${GITHUB_REF_NAME}.apk"
+          flutter build apk --release --split-per-abi --dart-define=BLINK_GITHUB_REPOSITORY=${{ github.repository }}
+          for f in build/app/outputs/flutter-apk/*.apk; do
+            base=$(basename "$f")
+            arch=$(echo "$base" | sed -E 's/.*-(arm64-v8a|armeabi-v7a|x86_64)-.*/\1/')
+            cp "$f" "../release/BLINK-Companion-${GITHUB_REF_NAME}-${arch}.apk"
+          done
 
       - name: Publish release assets
         uses: softprops/action-gh-release@v2

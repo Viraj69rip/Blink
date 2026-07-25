@@ -167,7 +167,7 @@ export default function PaymentModal({ open, onClose }) {
                   Scan to pay via UPI
                 </p>
                 <img
-                  src="/qr.jpg"
+                  src={import.meta.env.BASE_URL + 'qr.jpg'}
                   alt="UPI QR Code"
                   style={{
                     width: 200, height: 200, borderRadius: 16, margin: '0 auto',

@@ -6,90 +6,149 @@ const states = [
   { id: 'happy', label: 'Happy' },
   { id: 'dizzy', label: 'Dizzy' },
   { id: 'yawn', label: 'Yawning' },
+  { id: 'love', label: 'Love' },
   { id: 'app', label: 'App Mode' },
 ]
 
+function drawEyes(ctx, x, y, r, t, blinkFreq = 3) {
+  const blink = Math.sin(t * blinkFreq) > 0.92
+  ctx.fillStyle = '#ffffff'
+  if (blink) {
+    ctx.fillRect(x - r, y - 1, r * 2, 3)
+  } else {
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = '#000000'
+    const px = Math.sin(t * 0.5) * r * 0.2
+    const py = Math.cos(t * 0.7) * r * 0.15
+    ctx.beginPath(); ctx.arc(x + px, y + py, r * 0.45, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = '#ffffff'
+    ctx.beginPath(); ctx.arc(x + px - r * 0.15, y + py - r * 0.15, r * 0.15, 0, Math.PI * 2); ctx.fill()
+  }
+}
+
 function drawIdle(ctx, t, w, h) {
-  const blink = Math.sin(t * 3) > 0.92
+  drawEyes(ctx, w * 0.285, h * 0.33, w * 0.05, t)
+  drawEyes(ctx, w * 0.715, h * 0.33, w * 0.05, t)
   ctx.strokeStyle = '#ffffff'
   ctx.lineWidth = 2
   ctx.lineCap = 'round'
-  if (blink) {
-    ctx.beginPath(); ctx.moveTo(w * 0.22, h * 0.35); ctx.lineTo(w * 0.35, h * 0.35); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(w * 0.65, h * 0.35); ctx.lineTo(w * 0.78, h * 0.35); ctx.stroke()
-  } else {
-    ctx.fillStyle = '#ffffff'
-    ctx.beginPath(); ctx.arc(w * 0.285, h * 0.35, w * 0.055, 0, Math.PI * 2); ctx.fill()
-    ctx.beginPath(); ctx.arc(w * 0.715, h * 0.35, w * 0.055, 0, Math.PI * 2); ctx.fill()
-  }
+  const breath = Math.sin(t * 1.2) * 1.5
   ctx.beginPath()
-  ctx.arc(w * 0.5, h * 0.62, w * 0.045, 0.15 * Math.PI, 0.85 * Math.PI)
+  ctx.arc(w * 0.5, h * 0.62 + breath, w * 0.04, 0.15 * Math.PI, 0.85 * Math.PI)
   ctx.stroke()
 }
 
 function drawHappy(ctx, t, w, h) {
+  const shake = Math.sin(t * 18) * 1.5
   ctx.strokeStyle = '#ffffff'
-  ctx.lineWidth = 2
+  ctx.lineWidth = 2.2
   ctx.lineCap = 'round'
-  const s = Math.sin(t * 16) * 2
-  ctx.beginPath(); ctx.moveTo(w * 0.22 + s, h * 0.40); ctx.lineTo(w * 0.285 + s, h * 0.28); ctx.lineTo(w * 0.35 + s, h * 0.40); ctx.stroke()
-  ctx.beginPath(); ctx.moveTo(w * 0.65 + s, h * 0.40); ctx.lineTo(w * 0.715 + s, h * 0.28); ctx.lineTo(w * 0.78 + s, h * 0.40); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(w * 0.22 + shake, h * 0.38); ctx.lineTo(w * 0.285 + shake, h * 0.26); ctx.lineTo(w * 0.35 + shake, h * 0.38); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(w * 0.65 + shake, h * 0.38); ctx.lineTo(w * 0.715 + shake, h * 0.26); ctx.lineTo(w * 0.78 + shake, h * 0.38); ctx.stroke()
   ctx.fillStyle = '#ffffff'
-  ctx.beginPath(); ctx.ellipse(w * 0.5 + s, h * 0.66, w * 0.06, h * 0.07, 0, 0, Math.PI * 2); ctx.fill()
+  const mouthOpen = 0.5 + Math.sin(t * 6) * 0.15
+  ctx.beginPath(); ctx.ellipse(w * 0.5 + shake, h * 0.64, w * 0.065, h * 0.06 * mouthOpen, 0, 0, Math.PI * 2); ctx.fill()
+  ctx.fillStyle = 'rgba(255,255,255,0.08)'
+  ctx.beginPath(); ctx.arc(w * 0.2 + shake, h * 0.48, w * 0.035, 0, Math.PI * 2); ctx.fill()
+  ctx.beginPath(); ctx.arc(w * 0.8 + shake, h * 0.48, w * 0.035, 0, Math.PI * 2); ctx.fill()
 }
 
 function drawDizzy(ctx, t, w, h) {
   ctx.strokeStyle = '#ffffff'
-  ctx.lineWidth = 2
+  ctx.lineWidth = 1.8
   ;[w * 0.285, w * 0.715].forEach((cx) => {
     ctx.beginPath()
-    for (let i = 0; i < 20; i++) {
-      const a = t * 3.5 + i * 0.4
-      const r = 2 + i * 0.3
+    for (let i = 0; i < 24; i++) {
+      const a = t * 4 + i * 0.3
+      const r = 2 + i * 0.35 + Math.sin(t * 2 + i) * 0.5
       const x = cx + Math.cos(a) * r
-      const y = h * 0.38 + Math.sin(a) * r
+      const y = h * 0.36 + Math.sin(a) * r * 0.6
       i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
     }
     ctx.stroke()
   })
-  ctx.beginPath(); ctx.arc(w * 0.5, h * 0.72, w * 0.03, 0, Math.PI * 2); ctx.stroke()
+  ctx.fillStyle = 'rgba(255,255,255,0.8)'
+  const wobble = Math.sin(t * 10) * 2
+  for (let i = 0; i < 4; i++) {
+    const a = t * 3 + i * 1.57
+    const r = 6 + Math.sin(t * 2 + i) * 2
+    const sx = w * 0.5 + Math.cos(a) * r
+    const sy = h * 0.64 + Math.sin(a) * r * 0.5 + wobble
+    ctx.beginPath(); ctx.arc(sx, sy, 1.5, 0, Math.PI * 2); ctx.fill()
+  }
 }
 
 function drawYawn(ctx, t, w, h) {
   ctx.fillStyle = '#ffffff'
-  ctx.beginPath(); ctx.arc(w * 0.285, h * 0.35, w * 0.055, 0, Math.PI, false); ctx.fill()
-  ctx.beginPath(); ctx.arc(w * 0.715, h * 0.35, w * 0.055, 0, Math.PI, false); ctx.fill()
-  const mouthH = h * 0.22 + Math.sin(t * 2.5) * h * 0.04
-  ctx.beginPath(); ctx.ellipse(w * 0.5, h * 0.68, w * 0.07, mouthH / 2, 0, 0, Math.PI * 2); ctx.fill()
+  const eyeH = 0.5 + Math.sin(t * 1.5) * 0.15
+  ctx.beginPath(); ctx.ellipse(w * 0.285, h * 0.33, w * 0.05, w * 0.035 * eyeH, 0, 0, Math.PI, false); ctx.fill()
+  ctx.beginPath(); ctx.ellipse(w * 0.715, h * 0.33, w * 0.05, w * 0.035 * eyeH, 0, 0, Math.PI, false); ctx.fill()
+  const yawnH = h * 0.24 + Math.sin(t * 2) * h * 0.06
+  ctx.beginPath(); ctx.ellipse(w * 0.5, h * 0.66, w * 0.075, yawnH / 2, 0, 0, Math.PI * 2); ctx.fill()
+  ctx.fillStyle = '#000000'
+  ctx.beginPath(); ctx.ellipse(w * 0.5, h * 0.7, w * 0.04, yawnH / 4, 0, 0, Math.PI * 2); ctx.fill()
+  ctx.fillStyle = 'rgba(255,255,255,0.6)'
+  ctx.font = `${h * 0.1}px monospace`
+  ctx.fillText('z', w * 0.88, h * 0.22)
+  ctx.fillText('z', w * 0.94, h * 0.14)
+}
+
+function drawLove(ctx, t, w, h) {
+  drawEyes(ctx, w * 0.285, h * 0.30, w * 0.055, t, 2)
+  drawEyes(ctx, w * 0.715, h * 0.30, w * 0.055, t, 2)
+  ctx.fillStyle = '#ffffff'
+  ctx.beginPath()
+  const pulse = 1 + Math.sin(t * 3) * 0.06
+  const hx = w * 0.5, hy = h * 0.54
+  ctx.moveTo(hx, hy + h * 0.04 * pulse)
+  ctx.bezierCurveTo(hx + w * 0.1 * pulse, hy - h * 0.04 * pulse, hx + w * 0.05 * pulse, hy - h * 0.1 * pulse, hx, hy - h * 0.02 * pulse)
+  ctx.bezierCurveTo(hx - w * 0.05 * pulse, hy - h * 0.1 * pulse, hx - w * 0.1 * pulse, hy - h * 0.04 * pulse, hx, hy + h * 0.04 * pulse)
+  ctx.fill()
+  for (let i = 0; i < 5; i++) {
+    const a = t * 2 + i * 1.26
+    const r = 8 + Math.sin(t * 1.5 + i) * 3
+    const px = w * 0.3 + Math.cos(a) * r * 0.6 + w * 0.2
+    const py = h * 0.46 + Math.sin(a) * r * 0.4
+    ctx.fillStyle = `rgba(255,255,255,${0.3 + Math.sin(t + i) * 0.15})`
+    ctx.beginPath(); ctx.arc(px, py, 1.5 + Math.sin(t + i) * 0.5, 0, Math.PI * 2); ctx.fill()
+  }
 }
 
 function drawApp(ctx, t, w, h) {
   ctx.textAlign = 'center'
-  ctx.font = `${h * 0.17}px monospace`
-  ctx.fillStyle = '#ffffff'
-  ctx.fillText('APP MODE', w * 0.5, h * 0.22)
-  for (let i = 0; i < 4; i++) {
-    const bh = h * 0.28 * ((i + 1) / 4) + Math.sin(t * 4 + i) * h * 0.04
-    ctx.fillStyle = i === 3 ? '#818cf8' : '#ffffff'
-    ctx.fillRect(w * 0.3 + i * w * 0.08, h * 0.8 - bh, w * 0.045, bh)
+  ctx.font = `bold ${h * 0.16}px monospace`
+  ctx.fillStyle = '#818cf8'
+  ctx.fillText('BLINK', w * 0.5, h * 0.22)
+  ctx.font = `${h * 0.08}px monospace`
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'
+  ctx.fillText('CONNECTED', w * 0.5, h * 0.34)
+  const barCount = 5
+  for (let i = 0; i < barCount; i++) {
+    const bh = h * 0.3 * ((i + 1) / barCount) + Math.sin(t * 3 + i * 1.2) * h * 0.04
+    const bx = w * 0.25 + i * (w * 0.1)
+    ctx.fillStyle = `rgba(129, 140, 248, ${0.4 + (i / barCount) * 0.6})`
+    ctx.fillRect(bx, h * 0.72 - bh, w * 0.05, bh)
   }
-  const ox = w * 0.5 + Math.cos(t * 2) * w * 0.09
-  const oy = h * 0.48 + Math.sin(t * 2) * h * 0.08
+  const dotX = w * 0.5 + Math.cos(t * 1.5) * w * 0.08
+  const dotY = h * 0.5 + Math.sin(t * 1.8) * h * 0.06
   ctx.fillStyle = '#6366f1'
-  ctx.beginPath(); ctx.arc(ox, oy, w * 0.025, 0, Math.PI * 2); ctx.fill()
+  ctx.shadowColor = '#6366f1'
+  ctx.shadowBlur = 8
+  ctx.beginPath(); ctx.arc(dotX, dotY, w * 0.025, 0, Math.PI * 2); ctx.fill()
+  ctx.shadowBlur = 0
+  ctx.fillStyle = 'rgba(255,255,255,0.08)'
+  ctx.beginPath(); ctx.arc(dotX, dotY, w * 0.055, 0, Math.PI * 2); ctx.fill()
 }
 
-const drawers = { idle: drawIdle, happy: drawHappy, dizzy: drawDizzy, yawn: drawYawn, app: drawApp }
+const drawers = { idle: drawIdle, happy: drawHappy, dizzy: drawDizzy, yawn: drawYawn, love: drawLove, app: drawApp }
 
 export default function Demo() {
   const canvasRef = useRef(null)
   const [currentState, setCurrentState] = useState('idle')
   const stateRef = useRef('idle')
-  const timeRef = useRef(0)
 
   useEffect(() => {
     stateRef.current = currentState
-    timeRef.current = 0
   }, [currentState])
 
   useEffect(() => {
@@ -155,7 +214,7 @@ export default function Demo() {
               borderRadius: 20,
               padding: 12,
               border: '1px solid rgba(255,255,255,0.08)',
-              boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.6)',
+              boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.6), 0 12px 36px rgba(0,0,0,0.3)',
             }}
           >
             <div

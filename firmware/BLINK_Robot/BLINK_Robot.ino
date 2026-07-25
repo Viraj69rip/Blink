@@ -143,7 +143,7 @@ static const int MENU_COUNT = 7;
 static const char* MENU_ITEMS[MENU_COUNT] = {
   "Focus Mode",
   "Mario Clock",
-  "BLE Status",
+  "Pairing Status",
   "HW Info",
   "Sound Test",
   "Normal Face",
@@ -2416,9 +2416,10 @@ void drawAppModeScreen(uint32_t t) {
     u8g2.setFont(u8g2_font_6x12_tr);
     const char* bleTxt = bleConnected ? "PAIRED" : "NOT PAIRED";
     int tw = u8g2.getStrWidth(bleTxt);
-    u8g2.drawStr((OLED_W - tw) / 2, 36, bleTxt);
+    u8g2.drawStr((OLED_W - tw) / 2, 30, bleTxt);
     u8g2.setFont(u8g2_font_5x7_tr);
-    u8g2.drawStr(28, 52, bleConnected ? "BLE linked" : "Scan in app");
+    u8g2.drawStr(20, 46, bleConnected ? "Phone connected" : "Open BLINK app");
+    u8g2.drawStr(20, 56, bleConnected ? "BLE linked" : "Scan for BLINK_C3");
     return;
   }
 

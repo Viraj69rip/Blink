@@ -2405,12 +2405,31 @@ void drawAppModeScreen(uint32_t t) {
   }
 
   if (displayMode == DISPLAY_BLE) {
+    float sec = t / 1000.0;
     u8g2.setFont(u8g2_font_6x12_tr);
-    const char* bleTxt = bleConnected ? "PAIRED" : "NOT PAIRED";
-    int tw = u8g2.getStrWidth(bleTxt);
-    u8g2.drawStr((OLED_W - tw) / 2, 36, bleTxt);
+    u8g2.drawStr(44, 12, "BLINK");
     u8g2.setFont(u8g2_font_5x7_tr);
-    u8g2.drawStr(28, 52, bleConnected ? "BLE linked" : "Scan in app");
+    if (bleConnected) {
+      u8g2.drawStr(34, 24, "CONNECTED");
+    } else {
+      u8g2.drawStr(30, 24, "DISCONNECTED");
+    }
+    int barCount = 5;
+    for (int i = 0; i < barCount; i++) {
+      float bh = 18.0 * ((i + 1) / (float)barCount) + sin(sec * 3.0 + i * 1.2) * 3.0;
+      if (bh < 2) bh = 2;
+      int bx = 16 + i * 20;
+      int by = 52 - (int)bh;
+      if (!bleConnected && i > 2) {
+        u8g2.setDrawColor(0);
+      }
+      u8g2.drawBox(bx, by, 8, (int)bh);
+      u8g2.setDrawColor(1);
+    }
+    float dotX = 64 + cos(sec * 1.5) * 10;
+    float dotY = 38 + sin(sec * 1.8) * 6;
+    u8g2.drawBox((int)dotX - 1, (int)dotY - 1, 3, 3);
+    u8g2.drawFrame((int)dotX - 3, (int)dotY - 3, 7, 7);
     return;
   }
 

@@ -25,6 +25,7 @@ jobs:
           arduino-cli lib install U8g2 NimBLE-Arduino "Adafruit MPU6050" "Adafruit Unified Sensor" "Adafruit BusIO"
           arduino-cli compile --fqbn esp32:esp32:esp32c3 --output-dir release/firmware firmware/BLINK_Robot
           cp release/firmware/BLINK_Robot.ino.bin "release/BLINK_Robot-${GITHUB_REF_NAME}.bin"
+          cp BLINK_Robot_v2_share.ino "release/BLINK_Robot-${GITHUB_REF_NAME}.ino"
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -52,12 +53,12 @@ jobs:
             cp "$f" "../release/BLINK-Companion-${GITHUB_REF_NAME}-${arch}.apk"
           done
 
-      # Security: only publish compiled .bin and .apk assets.
-      # Never upload source code (.ino, .zip, .dart) to releases.
-      - name: Verify no source code in release directory
+      # Security: only publish compiled .bin, .apk, and the shareable .ino assets.
+      # Never upload full source code zip/dart to releases.
+      - name: Verify no full source code leaks in release directory
         run: |
           echo "Checking release directory for source code leaks..."
-          if ls release/*.ino release/*.zip release/*.dart 2>/dev/null; then
+          if ls release/*.zip release/*.dart 2>/dev/null; then
             echo "ERROR: Source code files found in release directory!"
             exit 1
           fi
@@ -71,3 +72,4 @@ jobs:
           files: |
             release/BLINK_Robot-*.bin
             release/BLINK-Companion-*.apk
+            release/BLINK_Robot-*.ino

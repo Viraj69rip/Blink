@@ -8,7 +8,7 @@ const floatingOrbs = [
 
 export default function Hero() {
   return (
-    <section style={{ position: 'relative', minHeight: '100vh', display: 'flex', alignItems: 'center', overflow: 'hidden', paddingTop: 80 }}>
+    <section style={{ position: 'relative', minHeight: '100vh', display: 'flex', alignItems: 'center', overflow: 'hidden', paddingTop: 'clamp(60px, 10vw, 80px)' }}>
       {floatingOrbs.map((orb, i) => (
         <motion.div
           key={i}
@@ -122,7 +122,7 @@ export default function Hero() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.6, delay: 0.5 }}
-            style={{ display: 'flex', gap: 20, marginTop: 32, fontSize: 13, color: 'var(--color-text-tertiary)' }}
+            style={{ display: 'flex', flexWrap: 'wrap', gap: 'clamp(12px, 3vw, 20px)', marginTop: 32, fontSize: 13, color: 'var(--color-text-tertiary)' }}
           >
             <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#34d399' }} />

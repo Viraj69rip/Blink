@@ -34,14 +34,16 @@ html {
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
 }
 
 body {
   font-family: var(--font-body);
   background: var(--color-bg);
   color: var(--color-text);
-  overflow-x: hidden;
   line-height: 1.6;
+  overflow-x: hidden;
+  width: 100%;
 }
 
 img {
@@ -50,15 +52,8 @@ img {
   display: block;
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-button {
-  cursor: pointer;
-  font-family: inherit;
-}
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; font-family: inherit; }
 
 .container {
   width: 100%;
@@ -68,9 +63,7 @@ button {
 }
 
 @media (max-width: 768px) {
-  .container {
-    padding: 0 16px;
-  }
+  .container { padding: 0 16px; }
 }
 
 ::selection {
@@ -92,16 +85,11 @@ button {
   -webkit-backdrop-filter: blur(16px);
 }
 
-.glass-hover:hover {
-  background: rgba(255, 255, 255, 0.07);
-  border-color: var(--color-border-hover);
-}
-
 .btn-primary {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 32px;
+  padding: 14px 28px;
   background: var(--color-accent-gradient);
   color: white;
   font-weight: 700;
@@ -109,6 +97,7 @@ button {
   border: none;
   border-radius: var(--radius-full);
   transition: transform 0.2s, box-shadow 0.2s;
+  white-space: nowrap;
 }
 
 .btn-primary:hover {
@@ -120,7 +109,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 32px;
+  padding: 14px 28px;
   background: transparent;
   color: white;
   font-weight: 600;
@@ -128,6 +117,7 @@ button {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-full);
   transition: all 0.2s;
+  white-space: nowrap;
 }
 
 .btn-secondary:hover {
@@ -157,20 +147,45 @@ button {
 
 .section-title {
   font-family: var(--font-display);
-  font-size: clamp(2rem, 5vw, 3.5rem);
+  font-size: clamp(1.75rem, 5vw, 3.5rem);
   line-height: 1.15;
   margin-bottom: 16px;
 }
 
 .section-subtitle {
-  font-size: 16px;
+  font-size: clamp(14px, 2.5vw, 16px);
   color: var(--color-text-secondary);
   max-width: 540px;
   line-height: 1.7;
 }
 
+/* Mobile responsive */
 @media (max-width: 768px) {
-  .section {
-    padding: 60px 0;
-  }
+  .section { padding: 60px 0; }
+  .btn-primary, .btn-secondary { padding: 12px 20px; font-size: 14px; }
+  .hide-mobile { display: none !important; }
+  .nav-desktop { display: none !important; }
+  .hamburger { display: flex !important; }
+  .mobile-menu { display: block !important; }
+}
+
+@media (min-width: 769px) {
+  .nav-desktop { display: flex !important; }
+  .hamburger { display: none !important; }
+  .mobile-menu { display: none !important; }
+}
+
+@media (max-width: 400px) {
+  .container { padding: 0 12px; }
+  .section { padding: 40px 0; }
+}
+
+@media (max-width: 500px) {
+  .variant-grid { grid-template-columns: 1fr !important; }
+}
+
+/* Payment modal responsive */
+@media (max-width: 480px) {
+  .payment-modal { padding: 24px 16px !important; }
+  .payment-modal input, .payment-modal textarea { font-size: 16px !important; }
 }

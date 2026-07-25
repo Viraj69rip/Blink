@@ -122,7 +122,7 @@ export default function ProductShowcase() {
                   ? '1px solid rgba(99, 102, 241, 0.35)'
                   : '1px solid var(--color-border)',
                 borderRadius: 'var(--radius-lg)',
-                padding: tier.highlight ? '48px 36px' : '40px 36px',
+                padding: tier.highlight ? '48px clamp(20px, 5vw, 36px)' : '40px clamp(20px, 5vw, 36px)',
                 position: 'relative',
                 overflow: 'hidden',
                 transition: 'border-color 0.3s',
@@ -171,7 +171,7 @@ export default function ProductShowcase() {
               </p>
 
               <div style={{ marginBottom: 28 }}>
-                <span style={{ fontSize: 36, fontWeight: 800, color: tier.highlight ? '#818cf8' : 'white' }}>
+                <span style={{ fontSize: 'clamp(28px, 6vw, 36px)', fontWeight: 800, color: tier.highlight ? '#818cf8' : 'white' }}>
                   {tier.price}
                 </span>
               </div>

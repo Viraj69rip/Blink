@@ -65,6 +65,7 @@ export default function PaymentModal({ open, onClose }) {
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.92, y: 20 }}
           transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+          className="payment-modal"
           style={{
             position: 'relative', zIndex: 2,
             width: '100%', maxWidth: 480,
@@ -96,7 +97,7 @@ export default function PaymentModal({ open, onClose }) {
                 <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 8 }}>
                   Select Variant
                 </label>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                <div className="variant-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
                   {Object.entries(tiers).map(([key, t]) => (
                     <button
                       key={key}
@@ -170,7 +171,8 @@ export default function PaymentModal({ open, onClose }) {
                   src={import.meta.env.BASE_URL + 'qr.jpg'}
                   alt="UPI QR Code"
                   style={{
-                    width: 200, height: 200, borderRadius: 16, margin: '0 auto',
+                    width: 'min(200px, 70vw)', height: 'min(200px, 70vw)',
+                    borderRadius: 16, margin: '0 auto',
                     border: '1px solid rgba(255,255,255,0.1)',
                   }}
                 />

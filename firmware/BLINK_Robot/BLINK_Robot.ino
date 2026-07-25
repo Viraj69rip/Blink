@@ -139,14 +139,13 @@ enum DisplayMode : uint8_t {
 DisplayMode displayMode = DISPLAY_NORMAL;
 bool menuOpen = false;
 int menuIndex = 0;
-static const int MENU_COUNT = 7;
+static const int MENU_COUNT = 6;
 static const char* MENU_ITEMS[MENU_COUNT] = {
   "Focus Mode",
-  "Mario Clock",
+  "Clock",
   "BLE Status",
   "HW Info",
   "Sound Test",
-  "Normal Face",
   "Go Back"
 };
 
@@ -1789,14 +1788,7 @@ void applyMenuSelection() {
       displayMode = DISPLAY_NORMAL;
       enterState(STATE_IDLE);
       break;
-    case 5:  // Normal Face
-      focusActive = false;
-      drawMode = false;
-      displayMode = DISPLAY_NORMAL;
-      stopwatchText[0] = '\0';
-      enterState(STATE_IDLE);
-      break;
-    case 6:  // Go Back
+    case 5:  // Go Back
       // Close the menu without changing the screen currently in use.
       menuOpen = false;
       break;

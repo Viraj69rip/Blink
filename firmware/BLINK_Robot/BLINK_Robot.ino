@@ -2868,7 +2868,7 @@ class OtaDataCallbacks : public NimBLECharacteristicCallbacks {
       abortOtaUpdate("chunk");
       return;
     }
-    if (Update.write(reinterpret_cast<const uint8_t*>(value.data()), value.size()) != value.size()) {
+    if (Update.write(reinterpret_cast<uint8_t*>(const_cast<char*>(value.data())), value.size()) != value.size()) {
       abortOtaUpdate("write");
       return;
     }

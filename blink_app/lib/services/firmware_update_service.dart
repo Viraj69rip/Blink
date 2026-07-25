@@ -34,6 +34,7 @@ class FirmwareUpdateService extends ChangeNotifier {
   String? _error;
   bool _checkingGitHub = false;
   bool _downloadingFirmware = false;
+  double _downloadProgress = 0;
   String? _githubVersion;
   String? _githubAssetName;
   String? _githubAssetUrl;
@@ -47,6 +48,8 @@ class FirmwareUpdateService extends ChangeNotifier {
   String? get fileName => _fileName;
   String? get error => _error;
   bool get isCheckingGitHub => _checkingGitHub;
+  bool get isDownloadingFirmware => _downloadingFirmware;
+  double get downloadProgress => _downloadProgress;
   String? get githubVersion => _githubVersion;
   String? get githubAssetName => _githubAssetName;
   String? get githubReleaseNotes => _githubReleaseNotes;
@@ -190,10 +193,11 @@ class FirmwareUpdateService extends ChangeNotifier {
   }
 
   /// Downloads the selected GitHub release and turns it into the same pending
-  /// update used by a manually chosen file.
+  /// update used by a manually chosen file. Reports progress via [downloadProgress].
   Future<void> downloadGitHubFirmware() async {
     if (_downloadingFirmware) return;
     _downloadingFirmware = true;
+    _downloadProgress = 0;
     final url = _githubAssetUrl;
     final name = _githubAssetName;
     if (url == null || name == null) {
@@ -212,12 +216,24 @@ class FirmwareUpdateService extends ChangeNotifier {
         throw HttpException(
             'Firmware download returned ${response.statusCode}');
       }
-      final bytes = Uint8List.fromList(await response.fold<List<int>>(
-        <int>[],
-        (buffer, chunk) => buffer..addAll(chunk),
-      ));
+
+      final contentLength = response.contentLength ?? 0;
+      final chunks = <int>[];
+      int received = 0;
+      await for (final chunk in response) {
+        chunks.addAll(chunk);
+        received += chunk.length;
+        if (contentLength > 0) {
+          _downloadProgress = (received / contentLength).clamp(0.0, 1.0);
+        }
+        notifyListeners();
+      }
+
+      final bytes = Uint8List.fromList(chunks);
       if (bytes.isEmpty)
         throw const FormatException('Downloaded firmware is empty.');
+      _downloadProgress = 1;
+      notifyListeners();
       await _storeFirmware(bytes, name);
     } catch (error) {
       _error = error.toString().replaceFirst('Bad state: ', '');
@@ -225,6 +241,7 @@ class FirmwareUpdateService extends ChangeNotifier {
       rethrow;
     } finally {
       _downloadingFirmware = false;
+      _downloadProgress = 0;
       client.close(force: true);
     }
   }

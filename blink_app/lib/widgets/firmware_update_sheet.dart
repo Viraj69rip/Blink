@@ -42,7 +42,9 @@ class _FirmwareUpdateSheetState extends State<FirmwareUpdateSheet> {
           bool,
           bool,
           String?,
-          String?
+          String?,
+          bool,
+          double
         )>(
       selector: (_, s) => (
         s.hasPendingFirmwareUpdate,
@@ -57,6 +59,8 @@ class _FirmwareUpdateSheetState extends State<FirmwareUpdateSheet> {
         s.hasGitHubFirmware,
         s.githubFirmwareVersion,
         s.githubFirmwareError,
+        s.isDownloadingFirmware,
+        s.firmwareDownloadProgress,
       ),
       builder: (context, data, _) {
         final pending = data.$1;
@@ -71,7 +75,14 @@ class _FirmwareUpdateSheetState extends State<FirmwareUpdateSheet> {
         final githubAvailable = data.$10;
         final githubVersion = data.$11;
         final githubError = data.$12;
+        final downloading = data.$13;
+        final downloadProgress = data.$14;
         final canInstall = pending && connected && supported && !installing;
+        final downloadingOrInstalling = downloading || installing;
+        final activeMessage = downloading
+            ? 'Downloading ${(100 * downloadProgress).round()}%'
+            : message;
+        final activeProgress = downloading ? downloadProgress : progress;
         final state = context.read<RobotStateProvider>();
 
         return SafeArea(
@@ -138,7 +149,7 @@ class _FirmwareUpdateSheetState extends State<FirmwareUpdateSheet> {
                     icon: const Icon(Icons.refresh_rounded, size: 18),
                     label: const Text('CHECK FOR UPDATES'),
                   )
-                else if (githubAvailable && !pending)
+                else if (githubAvailable && !pending && !downloading)
                   FilledButton.icon(
                     onPressed: installing
                         ? null
@@ -150,18 +161,24 @@ class _FirmwareUpdateSheetState extends State<FirmwareUpdateSheet> {
                     icon: const Icon(Icons.cloud_download_rounded, size: 18),
                     label: Text('DOWNLOAD v$githubVersion'),
                   ),
-                if (installing || message != null) ...[
+                if (downloadingOrInstalling || message != null) ...[
                   const SizedBox(height: 18),
                   LinearProgressIndicator(
-                    value: installing ? progress : null,
+                    value: downloadingOrInstalling ? activeProgress : null,
                     minHeight: 4,
                     backgroundColor: BlinkColors.surfaceVariant,
                     valueColor:
                         const AlwaysStoppedAnimation(BlinkColors.accent),
                   ),
                   const SizedBox(height: 8),
-                  Text(message ?? 'Installing…',
-                      style: BlinkTypography.monoSmall),
+                  Text(
+                    activeMessage ?? 'Installing…',
+                    style: BlinkTypography.monoSmall.copyWith(
+                      color: downloading
+                          ? BlinkColors.textSecondary
+                          : BlinkColors.textPrimary,
+                    ),
+                  ),
                 ],
                 if (pending && !installing) ...[
                   const SizedBox(height: 18),

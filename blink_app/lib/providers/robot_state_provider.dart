@@ -80,6 +80,8 @@ class RobotStateProvider extends ChangeNotifier
   String? get firmwareUpdateMessage => _ble.firmwareUpdateMessage;
   bool get githubFirmwareConfigured => true;
   bool get checkingGitHubFirmware => _firmware.isCheckingGitHub;
+  bool get isDownloadingFirmware => _firmware.isDownloadingFirmware;
+  double get firmwareDownloadProgress => _firmware.downloadProgress;
   bool get hasGitHubFirmware => _firmware.hasGitHubFirmware;
   String? get githubFirmwareVersion => _firmware.githubVersion;
   String? get githubFirmwareAssetName => _firmware.githubAssetName;

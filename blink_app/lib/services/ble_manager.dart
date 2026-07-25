@@ -380,21 +380,23 @@ class BleManager extends ChangeNotifier {
       await _writeFirmwareControl('BEGIN:${firmware.length}');
       await _otaWaiter!.future.timeout(const Duration(seconds: 12));
 
-      // Use withoutResponse: true for fast pipelined writes, but throttle in
-      // batches of 20 so the ESP32's BLE buffer doesn't overflow.
+      // Use withoutResponse: true for fast writes; await each so we catch
+      // connection drops or BLE errors immediately.
       final chunkSize = (device.mtuNow - 3).clamp(20, 180).toInt();
-      int batchCount = 0;
       for (var offset = 0; offset < firmware.length; offset += chunkSize) {
         final end = (offset + chunkSize).clamp(0, firmware.length).toInt();
-        unawaited(data.write(firmware.sublist(offset, end), withoutResponse: true));
+        try {
+          await data.write(firmware.sublist(offset, end),
+              withoutResponse: true);
+        } catch (e) {
+          _firmwareUpdateMessage = 'Write failed at byte $offset: $e';
+          notifyListeners();
+          rethrow;
+        }
         _firmwareUpdateProgress = end / firmware.length;
         _firmwareUpdateMessage =
             'Transferring ${(100 * _firmwareUpdateProgress).round()}%';
         notifyListeners();
-        batchCount++;
-        if (batchCount % 20 == 0) {
-          await Future.delayed(const Duration(milliseconds: 10));
-        }
       }
 
       // Give the last chunk time to arrive before sending END.
@@ -407,7 +409,6 @@ class BleManager extends ChangeNotifier {
       try {
         await _writeFirmwareControl('ABORT');
       } catch (_) {}
-      _firmwareUpdateMessage = null;
       rethrow;
     } finally {
       _otaWaiter = null;

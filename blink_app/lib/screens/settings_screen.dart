@@ -235,9 +235,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     _SettingsTile(
                       icon: Icons.info_outline_rounded,
                       title: 'App Version',
-                      subtitle: 'BLINK Companion v3.0.0',
+                      subtitle: 'BLINK Companion v4.0.0',
                       trailing: Text(
-                        '3.0.0',
+                        '4.0.0',
                         style: BlinkTypography.monoSmall,
                       ),
                     ),
@@ -250,7 +250,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         showLicensePage(
                           context: context,
                           applicationName: 'BLINK',
-                          applicationVersion: 'v3.0.0',
+                          applicationVersion: 'v4.0.0',
                           applicationLegalese: '© 2026 BLINK Project',
                         );
                       },

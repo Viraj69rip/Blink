@@ -64,9 +64,14 @@ class BleManager extends ChangeNotifier {
   bool get firmwareUpdateInProgress => _firmwareUpdateInProgress;
   double get firmwareUpdateProgress => _firmwareUpdateProgress;
   String? get firmwareUpdateMessage => _firmwareUpdateMessage;
-  String get connectedName => _device?.platformName.isNotEmpty == true
-      ? _device!.platformName
-      : deviceName;
+  String get connectedName {
+    try {
+      if (_device != null && _device!.platformName.isNotEmpty) {
+        return _device!.platformName;
+      }
+    } catch (_) {}
+    return deviceName;
+  }
 
   Future<bool> _ensurePermissions() async {
     if (kIsWeb) return false;
@@ -174,6 +179,7 @@ class BleManager extends ChangeNotifier {
     notifyListeners();
 
     _device = device;
+    _firmwareVersion = null;
     await _connSub?.cancel();
     _connSub = device.connectionState.listen((s) {
       _connected = s == BluetoothConnectionState.connected;

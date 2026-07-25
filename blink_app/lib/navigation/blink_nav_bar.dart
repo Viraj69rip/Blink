@@ -324,13 +324,17 @@ class _NavTapTarget extends StatefulWidget {
 class _NavTapTargetState extends State<_NavTapTarget> {
   bool _pressed = false;
 
+  void _setPressed(bool v) {
+    if (mounted) setState(() => _pressed = v);
+  }
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: widget.onTap,
-      onTapDown: (_) => setState(() => _pressed = true),
-      onTapCancel: () => setState(() => _pressed = false),
-      onTapUp: (_) => setState(() => _pressed = false),
+      onTapDown: (_) => _setPressed(true),
+      onTapCancel: () => _setPressed(false),
+      onTapUp: (_) => _setPressed(false),
       behavior: HitTestBehavior.opaque,
       child: AnimatedScale(
         scale: _pressed ? 0.92 : 1,

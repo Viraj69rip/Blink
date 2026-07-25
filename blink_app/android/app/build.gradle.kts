@@ -33,6 +33,9 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = 4
         versionName = "4.0.0"
+        ndk {
+            abiFilters.clear()
+        }
     }
 
     buildTypes {

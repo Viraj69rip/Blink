@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:path_provider/path_provider.dart';
@@ -21,11 +20,9 @@ class FirmwareUpdateService extends ChangeNotifier {
   static const _fileKey = 'pending_firmware_file';
   static const _nameKey = 'pending_firmware_name';
 
-  /// Configure at build time, for example:
-  /// `--dart-define=BLINK_GITHUB_REPOSITORY=owner/BLINK`.
-  /// Public GitHub releases must include one compiled ESP32 `.bin` asset.
-  static const githubRepository =
-      String.fromEnvironment('BLINK_GITHUB_REPOSITORY');
+  /// GitHub repository that hosts the compiled BLINK firmware .bin assets.
+  /// Hardcoded for the closed-source companion app so no --dart-define is needed.
+  static const githubRepository = 'Viraj69rip/Blink';
 
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
@@ -48,7 +45,6 @@ class FirmwareUpdateService extends ChangeNotifier {
   bool get hasPendingUpdate => _hasPendingUpdate;
   String? get fileName => _fileName;
   String? get error => _error;
-  bool get isGitHubConfigured => githubRepository.isNotEmpty;
   bool get isCheckingGitHub => _checkingGitHub;
   String? get githubVersion => _githubVersion;
   String? get githubAssetName => _githubAssetName;
@@ -66,9 +62,13 @@ class FirmwareUpdateService extends ChangeNotifier {
   }
 
   /// Compares [githubVersion] with [robotVersion] and sets [_isUpdateAvailable].
-  /// Returns true when both versions are non-null and github > robot.
+  /// Auto-downloads the latest firmware when an update is detected and no
+  /// pending file exists yet.
   void _evaluateUpdateAvailability() {
     _isUpdateAvailable = _isNewerVersion(_githubVersion, _robotVersion);
+    if (_isUpdateAvailable && !_hasPendingUpdate && _githubAssetUrl != null) {
+      unawaited(downloadGitHubFirmware());
+    }
     notifyListeners();
   }
 
@@ -127,14 +127,14 @@ class FirmwareUpdateService extends ChangeNotifier {
     } else {
       await _clearPersistedUpdate(prefs: prefs, cancelReminder: true);
     }
-    if (isGitHubConfigured) unawaited(checkGitHubRelease());
+    unawaited(checkGitHubRelease());
     notifyListeners();
   }
 
   /// Reads the newest published GitHub release. No token is needed for a
   /// public repository; private repositories should use the file-picker flow.
   Future<void> checkGitHubRelease() async {
-    if (!isGitHubConfigured || _checkingGitHub) return;
+    if (_checkingGitHub) return;
     _checkingGitHub = true;
     _githubError = null;
     notifyListeners();
@@ -221,30 +221,6 @@ class FirmwareUpdateService extends ChangeNotifier {
     }
   }
 
-  Future<bool> chooseFirmwareFile() async {
-    _error = null;
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['bin'],
-      withData: true,
-    );
-    if (result == null || result.files.isEmpty) return false;
-
-    final selected = result.files.single;
-    Uint8List? bytes = selected.bytes;
-    if (bytes == null && selected.path != null) {
-      bytes = await File(selected.path!).readAsBytes();
-    }
-    if (bytes == null || bytes.isEmpty) {
-      _error = 'The selected firmware file could not be read.';
-      notifyListeners();
-      return false;
-    }
-
-    await _storeFirmware(bytes, selected.name);
-    return true;
-  }
-
   Future<void> _storeFirmware(Uint8List bytes, String name) async {
     final directory = await getApplicationDocumentsDirectory();
     final target = File(
@@ -265,7 +241,7 @@ class FirmwareUpdateService extends ChangeNotifier {
   Future<void> installPendingUpdate(BleManager ble) async {
     final path = _filePath;
     if (!_hasPendingUpdate || path == null || !await File(path).exists()) {
-      throw StateError('Choose a firmware .bin file before updating BLINK.');
+      throw StateError('Download a firmware release before updating BLINK.');
     }
 
     _error = null;
@@ -279,9 +255,6 @@ class FirmwareUpdateService extends ChangeNotifier {
       rethrow;
     }
   }
-
-  Future<void> discardPendingUpdate() =>
-      _clearPersistedUpdate(cancelReminder: true);
 
   Future<void> _requestNotificationPermission() async {
     final android = _notifications.resolvePlatformSpecificImplementation<

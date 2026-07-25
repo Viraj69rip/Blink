@@ -6,12 +6,18 @@ import '../theme/blink_theme.dart';
 import '../theme/blink_constants.dart';
 
 /// Shared bottom-sheet content for firmware update management.
-/// Used by both the command center banner and the settings screen.
+/// Auto-checks GitHub releases and provides a single update flow.
 class FirmwareUpdateSheet extends StatelessWidget {
   const FirmwareUpdateSheet({super.key});
 
   @override
   Widget build(BuildContext context) {
+    // Trigger a GitHub check when the sheet opens.
+    final state = context.read<RobotStateProvider>();
+    if (!state.checkingGitHubFirmware) {
+      state.checkGitHubFirmware();
+    }
+
     return Selector<
         RobotStateProvider,
         (
@@ -25,42 +31,36 @@ class FirmwareUpdateSheet extends StatelessWidget {
           BleConnectionState,
           bool,
           bool,
-          bool,
-          String?,
           String?,
           String?
         )>(
-      selector: (_, state) => (
-        state.hasPendingFirmwareUpdate,
-        state.pendingFirmwareFileName,
-        state.installedFirmwareVersion,
-        state.firmwareUpdateSupported,
-        state.firmwareUpdateInProgress,
-        state.firmwareUpdateProgress,
-        state.firmwareUpdateMessage ?? state.firmwareUpdateError,
-        state.connectionState,
-        state.githubFirmwareConfigured,
-        state.checkingGitHubFirmware,
-        state.hasGitHubFirmware,
-        state.githubFirmwareVersion,
-        state.githubFirmwareAssetName,
-        state.githubFirmwareError,
+      selector: (_, s) => (
+        s.hasPendingFirmwareUpdate,
+        s.pendingFirmwareFileName,
+        s.installedFirmwareVersion,
+        s.firmwareUpdateSupported,
+        s.firmwareUpdateInProgress,
+        s.firmwareUpdateProgress,
+        s.firmwareUpdateMessage ?? s.firmwareUpdateError,
+        s.connectionState,
+        s.checkingGitHubFirmware,
+        s.hasGitHubFirmware,
+        s.githubFirmwareVersion,
+        s.githubFirmwareError,
       ),
-      builder: (context, firmware, _) {
-        final pending = firmware.$1;
-        final fileName = firmware.$2;
-        final installedVersion = firmware.$3;
-        final supported = firmware.$4;
-        final installing = firmware.$5;
-        final progress = firmware.$6;
-        final message = firmware.$7;
-        final connected = firmware.$8 == BleConnectionState.connected;
-        final githubConfigured = firmware.$9;
-        final checkingGitHub = firmware.$10;
-        final githubAvailable = firmware.$11;
-        final githubVersion = firmware.$12;
-        final githubAsset = firmware.$13;
-        final githubError = firmware.$14;
+      builder: (context, data, _) {
+        final pending = data.$1;
+        final fileName = data.$2;
+        final installedVersion = data.$3;
+        final supported = data.$4;
+        final installing = data.$5;
+        final progress = data.$6;
+        final message = data.$7;
+        final connected = data.$8 == BleConnectionState.connected;
+        final checkingGitHub = data.$9;
+        final githubAvailable = data.$10;
+        final githubVersion = data.$11;
+        final githubError = data.$12;
         final canInstall = pending && connected && supported && !installing;
         final state = context.read<RobotStateProvider>();
 
@@ -89,79 +89,56 @@ class FirmwareUpdateSheet extends StatelessWidget {
                   style: BlinkTypography.titleMedium,
                 ),
                 const SizedBox(height: 6),
-                Text(
-                  pending
-                      ? '${fileName ?? 'Selected .bin'} is ready. A daily reminder stays on until installation succeeds.'
-                      : 'Choose the compiled BLINK .bin file to prepare an update.',
-                  style: BlinkTypography.bodyMedium
-                      .copyWith(color: BlinkColors.textSecondary, height: 1.4),
-                ),
+                if (checkingGitHub)
+                  Text('Checking for updates…',
+                      style: BlinkTypography.bodyMedium.copyWith(
+                          color: BlinkColors.textTertiary))
+                else if (githubError != null)
+                  Text(githubError,
+                      style: BlinkTypography.bodyMedium.copyWith(
+                          color: BlinkColors.accent, height: 1.4))
+                else if (githubAvailable)
+                  Text(
+                    pending
+                        ? '${fileName ?? 'firmware.bin'} downloaded · ready to install'
+                        : 'GitHub release v$githubVersion available',
+                    style: BlinkTypography.bodyMedium.copyWith(
+                      color: pending
+                          ? BlinkColors.accent
+                          : BlinkColors.textSecondary,
+                      height: 1.4,
+                    ),
+                  )
+                else
+                  Text('No firmware release found.',
+                      style: BlinkTypography.bodyMedium.copyWith(
+                          color: BlinkColors.textTertiary)),
                 if (connected && !supported) ...[
                   const SizedBox(height: 12),
                   Text(
-                    'This robot needs the one-time USB flash of firmware v3.1 before it can receive later updates over BLE.',
+                    'This robot needs a one-time USB flash before it can receive updates over BLE.',
                     style: BlinkTypography.bodyMedium
                         .copyWith(color: BlinkColors.accent, height: 1.4),
                   ),
                 ],
                 const SizedBox(height: 18),
-                if (githubConfigured) ...[
-                  Text(
-                    githubAvailable
-                        ? 'GitHub release v${githubVersion ?? 'latest'} · ${githubAsset ?? 'firmware.bin'}'
-                        : (githubError ??
-                            'Check the latest published firmware release.'),
-                    style: BlinkTypography.bodyMedium.copyWith(
-                      color: githubAvailable
-                          ? BlinkColors.textSecondary
-                          : BlinkColors.textTertiary,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: checkingGitHub
-                              ? null
-                              : () => state.checkGitHubFirmware(),
-                          icon: checkingGitHub
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child:
-                                      CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Icon(Icons.refresh_rounded, size: 18),
-                          label: const Text('CHECK GITHUB'),
-                        ),
-                      ),
-                      if (githubAvailable) ...[
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: installing
-                                ? null
-                                : () async {
-                                    try {
-                                      await state.downloadGitHubFirmware();
-                                    } catch (_) {}
-                                  },
-                            icon: const Icon(Icons.cloud_download_rounded,
-                                size: 18),
-                            label: const Text('GET RELEASE'),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ] else
-                  Text(
-                    'GitHub releases are not configured for this APK. Build with --dart-define=BLINK_GITHUB_REPOSITORY=owner/repository.',
-                    style: BlinkTypography.bodyMedium.copyWith(
-                      color: BlinkColors.textTertiary,
-                      height: 1.4,
-                    ),
+                if (!githubAvailable && !checkingGitHub && githubError == null)
+                  OutlinedButton.icon(
+                    onPressed: () => state.checkGitHubFirmware(),
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('CHECK FOR UPDATES'),
+                  )
+                else if (githubAvailable && !pending)
+                  FilledButton.icon(
+                    onPressed: installing
+                        ? null
+                        : () async {
+                            try {
+                              await state.downloadGitHubFirmware();
+                            } catch (_) {}
+                          },
+                    icon: const Icon(Icons.cloud_download_rounded, size: 18),
+                    label: Text('DOWNLOAD v$githubVersion'),
                   ),
                 if (installing || message != null) ...[
                   const SizedBox(height: 18),
@@ -176,41 +153,25 @@ class FirmwareUpdateSheet extends StatelessWidget {
                   Text(message ?? 'Installing…',
                       style: BlinkTypography.monoSmall),
                 ],
-                const SizedBox(height: 24),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: installing
-                            ? null
-                            : () async {
-                                await state.chooseFirmwareUpdate();
-                              },
-                        icon: const Icon(Icons.upload_file_rounded, size: 18),
-                        label: const Text('CHOOSE .BIN'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: canInstall
-                            ? () async {
-                                try {
-                                  await state.installFirmwareUpdate();
-                                } catch (_) {}
-                              }
-                            : null,
-                        icon: const Icon(Icons.play_arrow_rounded, size: 18),
-                        label: const Text('INSTALL'),
-                      ),
-                    ),
-                  ],
-                ),
                 if (pending && !installing) ...[
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: state.discardFirmwareUpdate,
-                    child: const Text('DISCARD PENDING UPDATE'),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: canInstall
+                          ? () async {
+                              try {
+                                await state.installFirmwareUpdate();
+                              } catch (_) {}
+                            }
+                          : null,
+                      icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                      label: Text(
+                        connected && supported
+                            ? 'INSTALL UPDATE'
+                            : 'CONNECT BLINK TO INSTALL',
+                      ),
+                    ),
                   ),
                 ],
               ],

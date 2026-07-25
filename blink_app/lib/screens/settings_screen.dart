@@ -431,14 +431,16 @@ class _FirmwareUpdateTile extends StatelessWidget {
         final subtitle = installing
             ? (message ?? 'Installing ${(progress * 100).round()}%')
             : pending
-                ? '${fileName ?? 'Firmware selected'} · daily reminder on'
+                ? '${fileName ?? 'Firmware downloaded'} · ready to install'
                 : updateAvailable && connected
                     ? 'Update v$robotVersion → v$githubVersion available'
                     : connected && !supported
-                        ? 'USB-flash v3.1 once to enable in-app updates'
+                        ? 'USB-flash once to enable in-app updates'
                         : version == null
-                            ? 'Choose a .bin file to update BLINK'
-                            : 'Installed v$version';
+                            ? 'Connected to check for updates'
+                            : updateAvailable
+                                ? 'Update v$githubVersion available'
+                                : 'Installed v$version';
 
         return _SettingsTile(
           icon: Icons.system_update_alt_rounded,

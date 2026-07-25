@@ -73,7 +73,7 @@ class RobotStateProvider extends ChangeNotifier
   bool get firmwareUpdateInProgress => _ble.firmwareUpdateInProgress;
   double get firmwareUpdateProgress => _ble.firmwareUpdateProgress;
   String? get firmwareUpdateMessage => _ble.firmwareUpdateMessage;
-  bool get githubFirmwareConfigured => _firmware.isGitHubConfigured;
+  bool get githubFirmwareConfigured => true;
   bool get checkingGitHubFirmware => _firmware.isCheckingGitHub;
   bool get hasGitHubFirmware => _firmware.hasGitHubFirmware;
   String? get githubFirmwareVersion => _firmware.githubVersion;
@@ -206,11 +206,7 @@ class RobotStateProvider extends ChangeNotifier
 
   Future<void> playSoundTest() => _ble.sendCommand('SOUND:TEST');
 
-  Future<bool> chooseFirmwareUpdate() => _firmware.chooseFirmwareFile();
-
   Future<void> installFirmwareUpdate() => _firmware.installPendingUpdate(_ble);
-
-  Future<void> discardFirmwareUpdate() => _firmware.discardPendingUpdate();
 
   Future<void> checkGitHubFirmware() => _firmware.checkGitHubRelease();
 

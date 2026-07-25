@@ -555,17 +555,11 @@ class _BentoGrid extends StatelessWidget {
 
             const SizedBox(width: BlinkConstants.gridGap),
 
-            // Card B — custom passive-buzzer melody test
+            // Card B — Firmware Update (check for new releases)
             Expanded(
               child: SizedBox(
                 height: 160,
-                child: ToggleCard(
-                  title: 'Sound',
-                  subtitle: 'CUSTOM TONE',
-                  icon: Icons.music_note_rounded,
-                  isActive: true,
-                  onTap: context.read<RobotStateProvider>().playSoundTest,
-                ),
+                child: const _FirmwareCard(),
               ),
             ),
           ],
@@ -578,6 +572,206 @@ class _BentoGrid extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Card B2 — Firmware Update card that checks GitHub releases on tap.
+class _FirmwareCard extends StatelessWidget {
+  const _FirmwareCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<RobotStateProvider, _FirmwareCardSnapshot>(
+      selector: (_, state) => _FirmwareCardSnapshot(
+        checking: state.checkingGitHubFirmware,
+        updateAvailable: state.isFirmwareUpdateAvailable,
+        hasGitHub: state.hasGitHubFirmware,
+        githubVersion: state.githubFirmwareVersion,
+        robotVersion: state.installedFirmwareVersion,
+        error: state.githubFirmwareError,
+        connected: state.connectionState == BleConnectionState.connected,
+      ),
+      builder: (context, data, _) {
+        final state = context.read<RobotStateProvider>();
+        IconData icon;
+        String title;
+        String subtitle;
+        Color accent;
+
+        if (data.checking) {
+          icon = Icons.sync_rounded;
+          title = 'Checking…';
+          subtitle = 'GITHUB RELEASE';
+          accent = BlinkColors.textTertiary;
+        } else if (data.error != null) {
+          icon = Icons.error_outline_rounded;
+          title = 'Check failed';
+          subtitle = 'TAP TO RETRY';
+          accent = BlinkColors.textTertiary;
+        } else if (data.updateAvailable && data.connected) {
+          icon = Icons.system_update_rounded;
+          title = 'Update v${data.githubVersion}';
+          subtitle = 'TAP TO INSTALL';
+          accent = BlinkColors.accent;
+        } else if (data.updateAvailable) {
+          icon = Icons.system_update_rounded;
+          title = 'v${data.githubVersion} ready';
+          subtitle = 'CONNECT TO INSTALL';
+          accent = BlinkColors.accent;
+        } else if (data.robotVersion != null && data.hasGitHub) {
+          icon = Icons.check_circle_outline_rounded;
+          title = 'Up to date';
+          subtitle = 'v${data.robotVersion}';
+          accent = BlinkColors.textSecondary;
+        } else if (data.hasGitHub) {
+          icon = Icons.new_releases_rounded;
+          title = 'v${data.githubVersion}';
+          subtitle = 'TAP TO CHECK';
+          accent = BlinkColors.textSecondary;
+        } else {
+          icon = Icons.download_rounded;
+          title = 'Firmware';
+          subtitle = 'TAP TO CHECK';
+          accent = BlinkColors.textSecondary;
+        }
+
+        return GestureDetector(
+          onTap: () {
+            if (!data.checking && !data.hasGitHub) {
+              state.checkGitHubFirmware();
+            }
+            _openFirmwareSheet(context);
+          },
+          child: AnimatedContainer(
+            duration: BlinkConstants.animDuration,
+            curve: BlinkConstants.animCurve,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: data.updateAvailable && data.connected
+                  ? BlinkColors.surface
+                  : BlinkColors.surface.withValues(alpha: 0.5),
+              borderRadius:
+                  BorderRadius.circular(BlinkConstants.borderRadius),
+              border: Border.all(
+                color: data.updateAvailable && data.connected
+                    ? BlinkColors.accent.withValues(alpha: 0.35)
+                    : BlinkColors.cardBorder,
+                width: data.updateAvailable && data.connected ? 1.2 : 1.0,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    AnimatedContainer(
+                      duration: BlinkConstants.animDuration,
+                      curve: BlinkConstants.animCurve,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: data.updateAvailable
+                            ? BlinkColors.accent.withValues(alpha: 0.1)
+                            : BlinkColors.surfaceVariant,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: data.checking
+                          ? SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: accent,
+                              ),
+                            )
+                          : Icon(icon, color: accent, size: 22),
+                    ),
+                    if (data.updateAvailable)
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: BlinkColors.accent,
+                        ),
+                      ),
+                  ],
+                ),
+                const Spacer(),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: BlinkTypography.titleMedium.copyWith(
+                        color: data.updateAvailable
+                            ? BlinkColors.textPrimary
+                            : BlinkColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: BlinkTypography.monoSmall.copyWith(
+                        color: data.updateAvailable
+                            ? BlinkColors.textSecondary
+                            : BlinkColors.textTertiary,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _openFirmwareSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => const FirmwareUpdateSheet(),
+    );
+  }
+}
+
+class _FirmwareCardSnapshot {
+  final bool checking;
+  final bool updateAvailable;
+  final bool hasGitHub;
+  final String? githubVersion;
+  final String? robotVersion;
+  final String? error;
+  final bool connected;
+
+  const _FirmwareCardSnapshot({
+    required this.checking,
+    required this.updateAvailable,
+    required this.hasGitHub,
+    this.githubVersion,
+    this.robotVersion,
+    this.error,
+    required this.connected,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is _FirmwareCardSnapshot &&
+      other.checking == checking &&
+      other.updateAvailable == updateAvailable &&
+      other.hasGitHub == hasGitHub &&
+      other.githubVersion == githubVersion &&
+      other.robotVersion == robotVersion &&
+      other.error == error &&
+      other.connected == connected;
+
+  @override
+  int get hashCode =>
+      Object.hash(checking, updateAvailable, hasGitHub, githubVersion,
+          robotVersion, error, connected);
 }
 
 /// Card C — Focus Timer (Pomodoro widget).

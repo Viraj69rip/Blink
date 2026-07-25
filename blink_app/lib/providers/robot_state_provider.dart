@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 
 import '../models/robot_animation_snapshot.dart';
 import '../services/ble_manager.dart';
@@ -16,14 +17,23 @@ enum BleConnectionState {
 }
 
 /// Manages all reactive state for the BLINK robot companion.
-class RobotStateProvider extends ChangeNotifier {
+class RobotStateProvider extends ChangeNotifier
+    with WidgetsBindingObserver {
   RobotStateProvider({BleManager? ble, FirmwareUpdateService? firmware})
       : _ble = ble ?? BleManager.instance,
         _firmware = firmware ?? FirmwareUpdateService.instance {
+    WidgetsBinding.instance.addObserver(this);
     _ble.addListener(_onBleChanged);
     _firmware.addListener(_onFirmwareChanged);
     unawaited(_firmware.initialize());
     _onBleChanged();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_firmware.checkGitHubRelease());
+    }
   }
 
   final BleManager _ble;
@@ -305,6 +315,7 @@ class RobotStateProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ble.removeListener(_onBleChanged);
     _firmware.removeListener(_onFirmwareChanged);
     _timer?.cancel();

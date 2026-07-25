@@ -54,7 +54,7 @@ static const int PIN_BUZZER  = 3;
 #define OTA_DATA_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26ad"  // Write: firmware binary chunks
 #define OTA_STATUS_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26ae"  // Read/notify: version and OTA progress
 
-static const char* FIRMWARE_VERSION = "3.1.0";
+static const char* FIRMWARE_VERSION = "4.0.0";
 
 // ─── Timing / thresholds ───────────────────────────────────────────────────
 static const uint32_t BOOT_MS           = 2200;

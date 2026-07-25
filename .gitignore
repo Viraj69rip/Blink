@@ -28,5 +28,8 @@ blink_app/.packages
 # ---------- ESP toolchain ----------
 ESP code/toolchain/
 
+# ---------- Website (Vite + React) ----------
+website/node_modules/
+
 # ---------- Gemini / AI context (optional, personal) ----------
 .gemini/

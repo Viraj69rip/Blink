@@ -6,7 +6,8 @@ import '../theme/blink_theme.dart';
 import '../theme/blink_constants.dart';
 
 /// Shared bottom-sheet content for firmware update management.
-/// Auto-checks GitHub releases and provides a single update flow.
+/// Auto-checks GitHub releases and provides a single update flow
+/// with animated progress indicators for download and install phases.
 class FirmwareUpdateSheet extends StatefulWidget {
   const FirmwareUpdateSheet({super.key});
 
@@ -14,8 +15,25 @@ class FirmwareUpdateSheet extends StatefulWidget {
   State<FirmwareUpdateSheet> createState() => _FirmwareUpdateSheetState();
 }
 
-class _FirmwareUpdateSheetState extends State<FirmwareUpdateSheet> {
+class _FirmwareUpdateSheetState extends State<FirmwareUpdateSheet>
+    with SingleTickerProviderStateMixin {
   bool _hasTriggeredCheck = false;
+  late AnimationController _pulseController;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -99,9 +117,28 @@ class _FirmwareUpdateSheetState extends State<FirmwareUpdateSheet> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('FIRMWARE UPDATE',
-                    style: BlinkTypography.labelSmall
-                        .copyWith(letterSpacing: 2.5)),
+                // ── Header with animated pulse when active ──────────
+                Row(
+                  children: [
+                    if (downloadingOrInstalling)
+                      AnimatedBuilder(
+                        animation: _pulseController,
+                        builder: (_, __) => Container(
+                          width: 8,
+                          height: 8,
+                          margin: const EdgeInsets.only(right: 10),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: BlinkColors.accent.withValues(
+                                alpha: 0.4 + _pulseController.value * 0.6),
+                          ),
+                        ),
+                      ),
+                    Text('FIRMWARE UPDATE',
+                        style: BlinkTypography.labelSmall
+                            .copyWith(letterSpacing: 2.5)),
+                  ],
+                ),
                 const SizedBox(height: 12),
                 Text(
                   installedVersion == null
@@ -161,14 +198,55 @@ class _FirmwareUpdateSheetState extends State<FirmwareUpdateSheet> {
                     icon: const Icon(Icons.cloud_download_rounded, size: 18),
                     label: Text('DOWNLOAD v$githubVersion'),
                   ),
+
+                // ── Progress section with animated circular indicator ──
                 if (downloadingOrInstalling || message != null) ...[
-                  const SizedBox(height: 18),
-                  LinearProgressIndicator(
-                    value: downloadingOrInstalling ? activeProgress : null,
-                    minHeight: 4,
-                    backgroundColor: BlinkColors.surfaceVariant,
-                    valueColor:
-                        const AlwaysStoppedAnimation(BlinkColors.accent),
+                  const SizedBox(height: 22),
+                  Center(
+                    child: SizedBox(
+                      width: 80,
+                      height: 80,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          SizedBox(
+                            width: 80,
+                            height: 80,
+                            child: CircularProgressIndicator(
+                              value: downloadingOrInstalling
+                                  ? activeProgress
+                                  : null,
+                              color: BlinkColors.accent,
+                              backgroundColor: BlinkColors.surfaceVariant,
+                              strokeWidth: 4,
+                              strokeCap: StrokeCap.round,
+                            ),
+                          ),
+                          Text(
+                            downloadingOrInstalling
+                                ? '${(activeProgress * 100).round()}%'
+                                : '✓',
+                            style: BlinkTypography.mono.copyWith(
+                              fontSize: downloadingOrInstalling ? 16 : 24,
+                              color: BlinkColors.accent,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  // Linear backup bar
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: downloadingOrInstalling ? activeProgress : null,
+                      minHeight: 4,
+                      backgroundColor: BlinkColors.surfaceVariant,
+                      valueColor:
+                          const AlwaysStoppedAnimation(BlinkColors.accent),
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Text(

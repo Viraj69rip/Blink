@@ -41,6 +41,18 @@ jobs:
             cp "$f" "../release/BLINK-Companion-${GITHUB_REF_NAME}-${arch}.apk"
           done
 
+      # Security: only publish compiled .bin and .apk assets.
+      # Never upload source code (.ino, .zip, .dart) to releases.
+      - name: Verify no source code in release directory
+        run: |
+          echo "Checking release directory for source code leaks..."
+          if ls release/*.ino release/*.zip release/*.dart 2>/dev/null; then
+            echo "ERROR: Source code files found in release directory!"
+            exit 1
+          fi
+          echo "✓ No source code files found. Safe to publish."
+          ls -la release/
+
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:

@@ -89,6 +89,16 @@ class RobotStateProvider extends ChangeNotifier
   String? get robotFirmwareVersion => _firmware.robotVersion;
   bool get isFirmwareUpdateAvailable => _firmware.isUpdateAvailable;
 
+  // ── App self-update ──────────────────────────────────────────
+  bool get isAppUpdateAvailable => _firmware.isAppUpdateAvailable;
+  bool get isDownloadingApk => _firmware.isDownloadingApk;
+  double get apkDownloadProgress => _firmware.apkDownloadProgress;
+  bool get hasDownloadedApk => _firmware.hasDownloadedApk;
+  String? get appUpdateError => _firmware.appUpdateError;
+  String? get pendingApkPath => _firmware.pendingApkPath;
+
+  Future<void> downloadAppUpdate() => _firmware.downloadAppUpdate();
+
   bool get isRobotSynced =>
       _connectionState == BleConnectionState.connected &&
       _ble.robotAnimation != null;
@@ -112,6 +122,9 @@ class RobotStateProvider extends ChangeNotifier
 
   void _onBleChanged() {
     final wasConnected = _connectionState == BleConnectionState.connected;
+    final oldState = _connectionState;
+    final oldExpression = _currentExpression;
+    final oldBattery = _batteryLevel;
 
     if (_ble.isScanning) {
       _connectionState = BleConnectionState.scanning;
@@ -146,7 +159,15 @@ class RobotStateProvider extends ChangeNotifier
       unawaited(_firmware.notifyUpdateAvailable());
     }
 
-    notifyListeners();
+    // Only rebuild the UI when something actually changed, avoiding
+    // unnecessary rebuilds from the 10 Hz state notify stream.
+    final changed = oldState != _connectionState ||
+        oldExpression != _currentExpression ||
+        oldBattery != _batteryLevel ||
+        justConnected;
+    if (changed) {
+      notifyListeners();
+    }
   }
 
   void _onFirmwareChanged() {

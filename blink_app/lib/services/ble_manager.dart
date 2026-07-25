@@ -380,10 +380,14 @@ class BleManager extends ChangeNotifier {
       await _writeFirmwareControl('BEGIN:${firmware.length}');
       await _otaWaiter!.future.timeout(const Duration(seconds: 12));
 
-      // Use withoutResponse: true for fast writes; await each so we catch
-      // connection drops or BLE errors immediately.
+      // Throttled writes: send chunks with brief pauses to avoid overwhelming
+      // the Android BLE stack, which causes crashes on many devices.
       final chunkSize = (device.mtuNow - 3).clamp(20, 180).toInt();
+      int chunksSinceYield = 0;
       for (var offset = 0; offset < firmware.length; offset += chunkSize) {
+        if (!_connected) {
+          throw StateError('Connection lost during firmware transfer.');
+        }
         final end = (offset + chunkSize).clamp(0, firmware.length).toInt();
         try {
           await data.write(firmware.sublist(offset, end),
@@ -392,6 +396,12 @@ class BleManager extends ChangeNotifier {
           _firmwareUpdateMessage = 'Write failed at byte $offset: $e';
           notifyListeners();
           rethrow;
+        }
+        chunksSinceYield++;
+        // Yield to the BLE stack every 4 chunks to prevent buffer overflow.
+        if (chunksSinceYield >= 4) {
+          chunksSinceYield = 0;
+          await Future.delayed(const Duration(milliseconds: 15));
         }
         _firmwareUpdateProgress = end / firmware.length;
         _firmwareUpdateMessage =

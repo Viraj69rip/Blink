@@ -305,6 +305,7 @@ static const ToneStep SOUND_BOOT[] = {{523, 70, 25}, {659, 70, 25}, {784, 120, 0
 static const ToneStep SOUND_TICKLE[] = {{784, 55, 20}, {1047, 90, 0}};
 static const ToneStep SOUND_DIZZY[] = {{330, 80, 20}, {294, 80, 20}, {247, 120, 0}};
 static const ToneStep SOUND_FOCUS_DONE[] = {{784, 90, 30}, {784, 90, 30}, {1047, 180, 0}};
+static const ToneStep SOUND_CUSTOM[] = {{523, 100, 20}, {659, 100, 20}, {880, 150, 40}, {1047, 200, 0}};
 
 // Pending BLE payloads (set in callbacks, handled in loop — keep callbacks short)
 volatile bool pendingTime = false;
@@ -1793,7 +1794,7 @@ void applyMenuSelection() {
       enterState(STATE_APP_MODE);
       break;
     case 4:  // Sound Test
-      playCustomSound(SOUND_BOOT, sizeof(SOUND_BOOT) / sizeof(SOUND_BOOT[0]));
+      playCustomSound(SOUND_CUSTOM, sizeof(SOUND_CUSTOM) / sizeof(SOUND_CUSTOM[0]));
       displayMode = DISPLAY_NORMAL;
       enterState(STATE_IDLE);
       break;
@@ -2414,34 +2415,41 @@ void drawAppModeScreen(uint32_t t) {
   }
 
   if (displayMode == DISPLAY_BLE) {
-    unsigned phase = t / 20;
-    u8g2.setFont(u8g2_font_6x12_tr);
-    u8g2.drawStr(44, 12, "BLINK");
-    u8g2.setFont(u8g2_font_5x7_tr);
-    if (bleConnected) {
-      u8g2.drawStr(34, 24, "CONNECTED");
-    } else {
-      u8g2.drawStr(30, 24, "DISCONNECTED");
+    float sec = t / 1000.0f;
+    
+    u8g2.setFont(u8g2_font_7x13B_tr);
+    int w1 = u8g2.getStrWidth("BLINK");
+    u8g2.drawStr((OLED_W - w1) / 2, 14, "BLINK");
+    
+    u8g2.setFont(u8g2_font_4x6_tr);
+    const char* stat = bleConnected ? "CONNECTED" : "DISCONNECTED";
+    int w2 = u8g2.getStrWidth(stat);
+    if (!bleConnected) {
+      u8g2.setDrawColor(2); // Use XOR mode if needed or just draw normally
     }
+    u8g2.drawStr((OLED_W - w2) / 2, 22, stat);
+    u8g2.setDrawColor(1);
+    
     for (int i = 0; i < 5; i++) {
-      int si = (phase / 8 + i * 13) & 63;
-      int sv = SIN_LUT[si];
-      int base = (i + 1) * 3 + 2;
-      int bh = base + sv * 8 / 31;
-      if (bh < 2) bh = 2;
-      if (bh > 32) bh = 32;
-      int bx = 16 + i * 20;
-      int by = 54 - bh;
+      float baseH = 19.2f * ((i + 1) / 5.0f);
+      float bh = baseH + sinf(sec * 3.0f + i * 1.2f) * 2.5f;
+      int bx = 32 + i * 13;
+      int h = (int)bh;
+      if (h < 1) h = 1;
+      
       if (!bleConnected && i > 2) {
-        u8g2.setDrawColor(0);
+        u8g2.drawFrame(bx, 46 - h, 6, h);
+      } else {
+        u8g2.drawBox(bx, 46 - h, 6, h);
       }
-      u8g2.drawBox(bx, by, 8, bh);
-      u8g2.setDrawColor(1);
     }
-    int dx = 64 + SIN_LUT[(phase / 10 + 16) & 63] * 10 / 31;
-    int dy = 38 + SIN_LUT[(phase / 8) & 63] * 6 / 31;
-    u8g2.drawBox(dx - 1, dy - 1, 3, 3);
-    u8g2.drawFrame(dx - 4, dy - 4, 9, 9);
+    
+    int dotX = 64 + (int)(cosf(sec * 1.5f) * 10.0f);
+    int dotY = 32 + (int)(sinf(sec * 1.8f) * 4.0f);
+    
+    u8g2.drawDisc(dotX, dotY, 2);
+    u8g2.drawCircle(dotX, dotY, 4);
+    
     return;
   }
 
@@ -2551,28 +2559,16 @@ bool readShake() {
                     a.acceleration.y * a.acceleration.y +
                     a.acceleration.z * a.acceleration.z);
   float gForce = mag / 9.80665f;
-
-  if (!mpuBaselineReady) {
-    mpuBaselineG = gForce;
-    mpuBaselineReady = true;
-    return false;
-  }
-
-  // Only learn the baseline while BLINK is still. Updating it during a
-  // shake was masking the very motion we need to detect.
-  float delta = fabsf(gForce - mpuBaselineG);
-  if (delta < 0.08f) {
-    mpuBaselineG = mpuBaselineG * 0.985f + gForce * 0.015f;
-  }
+  
   float gyroDps = sqrtf(g.gyro.x * g.gyro.x + g.gyro.y * g.gyro.y +
                         g.gyro.z * g.gyro.z) * 57.29578f;
 
-  // Detect both a sharp linear impulse and a rotational shake.
-  bool shook = gForce > SHAKE_THRESHOLD || delta > SHAKE_DELTA_G ||
-               gyroDps > SHAKE_GYRO_DPS;
+  // Simplified and robust shake detection:
+  // If the total g-force exceeds the shake threshold OR rotational speed is very high
+  bool shook = gForce > SHAKE_THRESHOLD || gyroDps > SHAKE_GYRO_DPS;
+  
   if (shook) {
-    Serial.printf("[MPU] SHAKE! g=%.2f base=%.2f delta=%.2f gyro=%.0f\n",
-                  gForce, mpuBaselineG, delta, gyroDps);
+    Serial.printf("[MPU] SHAKE! g=%.2f gyro=%.0f\n", gForce, gyroDps);
   }
   return shook;
 }

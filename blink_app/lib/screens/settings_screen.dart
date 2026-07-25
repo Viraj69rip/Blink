@@ -235,12 +235,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     _SettingsTile(
                       icon: Icons.info_outline_rounded,
                       title: 'App Version',
-                      subtitle: 'BLINK Companion v4.0.1',
+                      subtitle: 'BLINK Companion v5.0.0',
                       trailing: Text(
-                        '4.0.1',
+                        '5.0.0',
                         style: BlinkTypography.monoSmall,
                       ),
                     ),
+                    const _Divider(),
+                    const _AppUpdateTile(),
                     const _Divider(),
                     _SettingsTile(
                       icon: Icons.description_rounded,
@@ -250,7 +252,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         showLicensePage(
                           context: context,
                           applicationName: 'BLINK',
-                          applicationVersion: 'v4.0.1',
+                          applicationVersion: 'v5.0.0',
                           applicationLegalese: '© 2026 BLINK Project',
                         );
                       },
@@ -478,6 +480,135 @@ class _FirmwareUpdateTile extends StatelessWidget {
       isScrollControlled: true,
       builder: (_) => const FirmwareUpdateSheet(),
     );
+  }
+}
+
+class _AppUpdateTile extends StatelessWidget {
+  const _AppUpdateTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<
+        RobotStateProvider,
+        (bool, bool, double, bool, String?, String?, bool)>(
+      selector: (_, s) => (
+        s.isAppUpdateAvailable,
+        s.isDownloadingApk,
+        s.apkDownloadProgress,
+        s.hasDownloadedApk,
+        s.appUpdateError,
+        s.githubFirmwareVersion,
+        s.checkingGitHubFirmware,
+      ),
+      builder: (context, data, _) {
+        final updateAvailable = data.$1;
+        final downloading = data.$2;
+        final progress = data.$3;
+        final downloaded = data.$4;
+        final error = data.$5;
+        final version = data.$6;
+        final checking = data.$7;
+        final state = context.read<RobotStateProvider>();
+
+        final subtitle = checking
+            ? 'Checking for updates…'
+            : error != null
+                ? 'Update failed — tap to retry'
+                : downloading
+                    ? 'Downloading ${(progress * 100).round()}%'
+                    : downloaded
+                        ? 'v$version downloaded — tap to install'
+                        : updateAvailable
+                            ? 'v$version available — tap to download'
+                            : 'App is up to date';
+
+        return _SettingsTile(
+          icon: Icons.system_update_rounded,
+          title: 'Update App',
+          subtitle: subtitle,
+          onTap: () async {
+            if (downloading || checking) return;
+            if (downloaded) {
+              // Trigger Android package installer
+              final apkPath = state.pendingApkPath;
+              if (apkPath != null) {
+                _installApk(context, apkPath);
+              }
+            } else if (updateAvailable || error != null) {
+              try {
+                await state.downloadAppUpdate();
+                if (context.mounted) {
+                  final path = state.pendingApkPath;
+                  if (path != null) {
+                    _installApk(context, path);
+                  }
+                }
+              } catch (_) {}
+            } else {
+              await state.checkGitHubFirmware();
+            }
+          },
+          trailing: downloading
+              ? SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    value: progress == 0 ? null : progress,
+                    color: BlinkColors.accent,
+                    strokeWidth: 2,
+                  ),
+                )
+              : Icon(
+                  updateAvailable || downloaded
+                      ? Icons.download_rounded
+                      : Icons.check_circle_outline_rounded,
+                  color: updateAvailable || downloaded
+                      ? BlinkColors.accent
+                      : BlinkColors.textTertiary,
+                  size: 20,
+                ),
+        );
+      },
+    );
+  }
+
+  void _installApk(BuildContext context, String apkPath) {
+    // Use Android intent to install APK via platform channel.
+    // Since open_filex may not be available, we use a process-based approach.
+    try {
+      final uri = Uri.file(apkPath);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.install_mobile_rounded,
+                  color: BlinkColors.textPrimary, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'APK saved — open your file manager to install from:\n${uri.pathSegments.last}',
+                  style: BlinkTypography.monoSmall
+                      .copyWith(color: BlinkColors.textPrimary),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: BlinkColors.surface,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 6),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(
+              color: BlinkColors.accent.withValues(alpha: 0.3),
+            ),
+          ),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open installer: $e')),
+      );
+    }
   }
 }
 

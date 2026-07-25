@@ -12,6 +12,9 @@ import 'ble_manager.dart';
 
 /// Persists a selected firmware binary, exposes its install state, and keeps a
 /// daily local reminder active until BLINK accepts the update.
+///
+/// Also handles checking for app updates from the same GitHub release,
+/// downloading the APK, and triggering the Android package installer.
 class FirmwareUpdateService extends ChangeNotifier {
   FirmwareUpdateService._();
   static final FirmwareUpdateService instance = FirmwareUpdateService._();
@@ -23,6 +26,9 @@ class FirmwareUpdateService extends ChangeNotifier {
   /// GitHub repository that hosts the compiled BLINK firmware .bin assets.
   /// Hardcoded for the closed-source companion app so no --dart-define is needed.
   static const githubRepository = 'Viraj69rip/Blink';
+
+  /// Current app version — compared against GitHub release for app updates.
+  static const appVersion = '5.0.0';
 
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
@@ -44,6 +50,15 @@ class FirmwareUpdateService extends ChangeNotifier {
   bool _isUpdateAvailable = false;
   bool _notifiedUpdateAvailable = false;
 
+  // ── App self-update state ──────────────────────────────────────
+  bool _isAppUpdateAvailable = false;
+  String? _githubApkUrl;
+  String? _githubApkName;
+  bool _downloadingApk = false;
+  double _apkDownloadProgress = 0;
+  String? _pendingApkPath;
+  String? _appUpdateError;
+
   bool get hasPendingUpdate => _hasPendingUpdate;
   String? get fileName => _fileName;
   String? get error => _error;
@@ -57,6 +72,13 @@ class FirmwareUpdateService extends ChangeNotifier {
   bool get hasGitHubFirmware => _githubAssetUrl != null;
   String? get robotVersion => _robotVersion;
   bool get isUpdateAvailable => _isUpdateAvailable;
+
+  // App update getters
+  bool get isAppUpdateAvailable => _isAppUpdateAvailable;
+  bool get isDownloadingApk => _downloadingApk;
+  double get apkDownloadProgress => _apkDownloadProgress;
+  bool get hasDownloadedApk => _pendingApkPath != null;
+  String? get appUpdateError => _appUpdateError;
 
   /// Called by RobotStateProvider whenever the BLE-reported firmware version changes.
   void updateRobotVersion(String? version) {
@@ -144,6 +166,7 @@ class FirmwareUpdateService extends ChangeNotifier {
     if (_checkingGitHub) return;
     _checkingGitHub = true;
     _githubError = null;
+    _appUpdateError = null;
     notifyListeners();
 
     final client = HttpClient();
@@ -162,6 +185,8 @@ class FirmwareUpdateService extends ChangeNotifier {
       final release = jsonDecode(text) as Map<String, dynamic>;
       final assets = (release['assets'] as List<dynamic>? ?? const <dynamic>[])
           .whereType<Map<String, dynamic>>();
+
+      // Find firmware .bin asset
       final binary = assets.cast<Map<String, dynamic>?>().firstWhere(
             (asset) => (asset?['name'] as String? ?? '')
                 .toLowerCase()
@@ -181,6 +206,25 @@ class FirmwareUpdateService extends ChangeNotifier {
       if (_githubAssetUrl == null || _githubAssetName == null) {
         throw const FormatException('The GitHub firmware asset is incomplete.');
       }
+
+      // Find APK asset for app self-update
+      final apk = assets.cast<Map<String, dynamic>?>().firstWhere(
+            (asset) => (asset?['name'] as String? ?? '')
+                .toLowerCase()
+                .endsWith('.apk'),
+            orElse: () => null,
+          );
+      if (apk != null) {
+        _githubApkUrl = apk['browser_download_url'] as String?;
+        _githubApkName = apk['name'] as String?;
+        // Check if GitHub release version is newer than the installed app
+        _isAppUpdateAvailable = _isNewerVersion(_githubVersion, appVersion);
+      } else {
+        _githubApkUrl = null;
+        _githubApkName = null;
+        _isAppUpdateAvailable = false;
+      }
+
       _evaluateUpdateAvailability();
     } catch (error) {
       _githubAssetUrl = null;
@@ -230,8 +274,9 @@ class FirmwareUpdateService extends ChangeNotifier {
       }
 
       final bytes = Uint8List.fromList(chunks);
-      if (bytes.isEmpty)
+      if (bytes.isEmpty) {
         throw const FormatException('Downloaded firmware is empty.');
+      }
       _downloadProgress = 1;
       notifyListeners();
       await _storeFirmware(bytes, name);
@@ -245,6 +290,71 @@ class FirmwareUpdateService extends ChangeNotifier {
       client.close(force: true);
     }
   }
+
+  // ── App self-update methods ────────────────────────────────────
+
+  /// Downloads the APK asset from the latest GitHub release.
+  Future<void> downloadAppUpdate() async {
+    if (_downloadingApk) return;
+    final url = _githubApkUrl;
+    final name = _githubApkName;
+    if (url == null || name == null) {
+      throw StateError('No APK asset found in the latest GitHub release.');
+    }
+
+    _downloadingApk = true;
+    _apkDownloadProgress = 0;
+    _appUpdateError = null;
+    notifyListeners();
+
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(Uri.parse(url));
+      request.headers.set(HttpHeaders.userAgentHeader, 'BLINK-Companion');
+      final response = await request.close();
+      if (response.statusCode != HttpStatus.ok) {
+        throw HttpException('APK download returned ${response.statusCode}');
+      }
+
+      final contentLength = response.contentLength ?? 0;
+      final chunks = <int>[];
+      int received = 0;
+      await for (final chunk in response) {
+        chunks.addAll(chunk);
+        received += chunk.length;
+        if (contentLength > 0) {
+          _apkDownloadProgress = (received / contentLength).clamp(0.0, 1.0);
+        }
+        notifyListeners();
+      }
+
+      final bytes = Uint8List.fromList(chunks);
+      if (bytes.isEmpty) {
+        throw const FormatException('Downloaded APK is empty.');
+      }
+
+      // Save APK to app documents directory
+      final directory = await getApplicationDocumentsDirectory();
+      final target = File(
+          '${directory.path}${Platform.pathSeparator}blink_app_update.apk');
+      await target.writeAsBytes(bytes, flush: true);
+      _pendingApkPath = target.path;
+      _apkDownloadProgress = 1;
+      notifyListeners();
+    } catch (error) {
+      _appUpdateError = error.toString().replaceFirst('Bad state: ', '');
+      notifyListeners();
+      rethrow;
+    } finally {
+      _downloadingApk = false;
+      client.close(force: true);
+    }
+  }
+
+  /// Returns the path to the downloaded APK for installation.
+  /// The caller should use a platform channel or package (e.g. open_filex)
+  /// to trigger the Android package installer.
+  String? get pendingApkPath => _pendingApkPath;
 
   Future<void> _storeFirmware(Uint8List bytes, String name) async {
     final directory = await getApplicationDocumentsDirectory();

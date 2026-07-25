@@ -10,6 +10,9 @@ import '../theme/blink_theme.dart';
 const int kOledWidth = 128;
 const int kOledHeight = 64;
 
+/// Minimum interval between BLE draw-line writes to avoid flooding.
+const Duration _kBleThrottle = Duration(milliseconds: 30);
+
 /// A pixel-art drawing surface. Every visible white cell is an OLED pixel,
 /// and each emitted segment is the same integer line sent to the robot.
 class DrawingCanvas extends StatefulWidget {
@@ -27,6 +30,11 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   Offset? _lastOled;
   Future<void> _sendQueue = Future<void>.value();
   bool _drawModeSent = false;
+
+  // Throttle BLE writes to avoid flooding the stack.
+  DateTime? _lastBleEmitAt;
+  final List<_OledStroke> _pendingBleStrokes = [];
+  Timer? _throttleTimer;
 
   BleManager get _ble => widget.ble ?? BleManager.instance;
 
@@ -46,13 +54,20 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   }
 
   void _emitSegment(Offset from, Offset to) {
-    // Ordered BLE writes keep the OLED and local pixel grid in lockstep.
     _sendQueue = _sendQueue.then((_) => _ble.sendDrawLine(
           from.dx.toInt(),
           from.dy.toInt(),
           to.dx.toInt(),
           to.dy.toInt(),
         ));
+  }
+
+  void _flushPendingStrokes() {
+    for (final stroke in _pendingBleStrokes) {
+      _emitSegment(stroke.from, stroke.to);
+    }
+    _pendingBleStrokes.clear();
+    _lastBleEmitAt = DateTime.now();
   }
 
   void _onPanStart(DragStartDetails details, Size size) {
@@ -67,22 +82,60 @@ class DrawingCanvasState extends State<DrawingCanvas> {
     final to = _toOled(details.localPosition, size);
     if (to == from) return;
 
+    final stroke = _OledStroke(from: from, to: to);
+
+    // Always render locally for instant visual feedback.
     setState(() {
-      _strokes.add(_OledStroke(from: from, to: to));
+      _strokes.add(stroke);
     });
-    _emitSegment(from, to);
+
+    // Throttle BLE writes: send immediately if enough time has passed,
+    // otherwise buffer and schedule a flush.
+    final now = DateTime.now();
+    final canSendNow = _lastBleEmitAt == null ||
+        now.difference(_lastBleEmitAt!) >= _kBleThrottle;
+
+    if (canSendNow) {
+      _throttleTimer?.cancel();
+      _pendingBleStrokes.add(stroke);
+      _flushPendingStrokes();
+    } else {
+      _pendingBleStrokes.add(stroke);
+      _throttleTimer ??= Timer(_kBleThrottle, () {
+        _throttleTimer = null;
+        _flushPendingStrokes();
+      });
+    }
+
     _lastOled = to;
   }
 
-  void _onPanEnd(DragEndDetails _) => _lastOled = null;
+  void _onPanEnd(DragEndDetails _) {
+    // Flush any remaining buffered strokes.
+    _throttleTimer?.cancel();
+    _throttleTimer = null;
+    if (_pendingBleStrokes.isNotEmpty) {
+      _flushPendingStrokes();
+    }
+    _lastOled = null;
+  }
 
   Future<void> clearAll() async {
+    _throttleTimer?.cancel();
+    _throttleTimer = null;
+    _pendingBleStrokes.clear();
     setState(() {
       _strokes.clear();
       _lastOled = null;
       _drawModeSent = false;
     });
     await _ble.sendCommand('CLEAR');
+  }
+
+  @override
+  void dispose() {
+    _throttleTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -138,7 +191,7 @@ class _PixelGridPainter extends CustomPainter {
       ..color = Colors.white.withValues(alpha: 0.09)
       ..strokeWidth = 1;
 
-    // Major cells make the actual 128×64 coordinate system readable without
+    // Major cells make the actual 128x64 coordinate system readable without
     // drawing the old dotted background.
     for (var x = 0; x <= kOledWidth; x += 8) {
       canvas.drawLine(

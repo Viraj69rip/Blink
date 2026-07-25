@@ -325,26 +325,33 @@ class BleManager extends ChangeNotifier {
       _firmwareVersion = value.substring('VERSION:'.length);
     } else if (value == 'OTA:READY') {
       _firmwareUpdateMessage = 'Transferring firmware…';
-      _otaWaiter?.complete();
-      _otaWaiter = null;
+      if (_otaWaiter != null && !_otaWaiter!.isCompleted) {
+        _otaWaiter!.complete();
+      }
     } else if (value.startsWith('OTA:PROGRESS:')) {
       final parts = value.split(':');
       if (parts.length == 4) {
         final received = int.tryParse(parts[2]) ?? 0;
         final total = int.tryParse(parts[3]) ?? 1;
-        _firmwareUpdateProgress = (received / total).clamp(0.0, 1.0) as double;
+        _firmwareUpdateProgress = (received / total).clamp(0.0, 1.0);
         _firmwareUpdateMessage =
             'Installing ${(100 * _firmwareUpdateProgress).round()}%';
       }
     } else if (value == 'OTA:SUCCESS') {
       _firmwareUpdateProgress = 1;
       _firmwareUpdateMessage = 'Installed — BLINK is restarting';
-      _otaWaiter?.complete();
-      _otaWaiter = null;
+      if (_otaWaiter != null && !_otaWaiter!.isCompleted) {
+        _otaWaiter!.complete();
+      }
     } else if (value.startsWith('OTA:ERROR:')) {
       _firmwareUpdateMessage = 'Update failed: ${value.substring(10)}';
-      _otaWaiter?.completeError(StateError(_firmwareUpdateMessage ?? 'OTA error'));
-      _otaWaiter = null;
+      if (_otaWaiter != null && !_otaWaiter!.isCompleted) {
+        _otaWaiter!.completeError(StateError(_firmwareUpdateMessage ?? 'OTA error'));
+      }
+    } else if (value.startsWith('OTA:FLASHING:')) {
+      _firmwareUpdateMessage = 'Flashing ${value.substring(13)}%';
+      final pct = int.tryParse(value.substring(13)) ?? 0;
+      _firmwareUpdateProgress = pct / 100;
     }
     notifyListeners();
   }
@@ -373,25 +380,34 @@ class BleManager extends ChangeNotifier {
       await _writeFirmwareControl('BEGIN:${firmware.length}');
       await _otaWaiter!.future.timeout(const Duration(seconds: 12));
 
-      // A response write keeps chunks ordered. The size follows the negotiated
-      // MTU, so it also works when a phone cannot negotiate a large MTU.
-      final chunkSize = (device.mtuNow - 3).clamp(20, 180) as int;
+      // Use withoutResponse: true for fast pipelined writes, but throttle in
+      // batches of 20 so the ESP32's BLE buffer doesn't overflow.
+      final chunkSize = (device.mtuNow - 3).clamp(20, 180).toInt();
+      int batchCount = 0;
       for (var offset = 0; offset < firmware.length; offset += chunkSize) {
-        final end = (offset + chunkSize).clamp(0, firmware.length) as int;
-        await data.write(firmware.sublist(offset, end), withoutResponse: false);
+        final end = (offset + chunkSize).clamp(0, firmware.length).toInt();
+        unawaited(data.write(firmware.sublist(offset, end), withoutResponse: true));
         _firmwareUpdateProgress = end / firmware.length;
         _firmwareUpdateMessage =
             'Transferring ${(100 * _firmwareUpdateProgress).round()}%';
         notifyListeners();
+        batchCount++;
+        if (batchCount % 20 == 0) {
+          await Future.delayed(const Duration(milliseconds: 10));
+        }
       }
+
+      // Give the last chunk time to arrive before sending END.
+      await Future.delayed(const Duration(milliseconds: 500));
 
       _otaWaiter = Completer<void>();
       await _writeFirmwareControl('END');
-      await _otaWaiter!.future.timeout(const Duration(seconds: 18));
+      await _otaWaiter!.future.timeout(const Duration(seconds: 30));
     } catch (_) {
       try {
         await _writeFirmwareControl('ABORT');
       } catch (_) {}
+      _firmwareUpdateMessage = null;
       rethrow;
     } finally {
       _otaWaiter = null;

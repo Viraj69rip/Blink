@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../models/robot_animation_snapshot.dart';
 import '../services/ble_manager.dart';
@@ -27,6 +29,7 @@ class RobotStateProvider extends ChangeNotifier
     _firmware.addListener(_onFirmwareChanged);
     unawaited(_firmware.initialize());
     _onBleChanged();
+    unawaited(_requestPermissionsOnStartup());
   }
 
   @override
@@ -38,6 +41,8 @@ class RobotStateProvider extends ChangeNotifier
 
   final BleManager _ble;
   final FirmwareUpdateService _firmware;
+
+  bool _connectedSinceLastGithubCheck = false;
 
   // ── Connection State ─────────────────────────────────────────
   BleConnectionState _connectionState = BleConnectionState.disconnected;
@@ -104,6 +109,8 @@ class RobotStateProvider extends ChangeNotifier
   }
 
   void _onBleChanged() {
+    final wasConnected = _connectionState == BleConnectionState.connected;
+
     if (_ble.isScanning) {
       _connectionState = BleConnectionState.scanning;
     } else if (_ble.isConnected) {
@@ -124,8 +131,11 @@ class RobotStateProvider extends ChangeNotifier
 
     _firmware.updateRobotVersion(_ble.firmwareVersion);
 
-    // Refresh GitHub release data on connect so version comparison is current.
-    if (_connectionState == BleConnectionState.connected) {
+    // Refresh GitHub release once per connection, not on every BLE notification.
+    final justConnected =
+        !wasConnected && _connectionState == BleConnectionState.connected;
+    if (justConnected && !_ble.firmwareUpdateInProgress) {
+      _connectedSinceLastGithubCheck = true;
       unawaited(_firmware.checkGitHubRelease());
     }
 
@@ -144,6 +154,17 @@ class RobotStateProvider extends ChangeNotifier
       unawaited(_firmware.notifyUpdateAvailable());
     }
     notifyListeners();
+  }
+
+  Future<void> _requestPermissionsOnStartup() async {
+    if (kIsWeb) return;
+    if (!Platform.isAndroid) return;
+    try {
+      await Permission.bluetoothScan.request();
+      await Permission.bluetoothConnect.request();
+      await Permission.locationWhenInUse.request();
+      await Permission.notification.request();
+    } catch (_) {}
   }
 
   // ── Connection Methods ───────────────────────────────────────

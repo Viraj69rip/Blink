@@ -7,15 +7,25 @@ import '../theme/blink_constants.dart';
 
 /// Shared bottom-sheet content for firmware update management.
 /// Auto-checks GitHub releases and provides a single update flow.
-class FirmwareUpdateSheet extends StatelessWidget {
+class FirmwareUpdateSheet extends StatefulWidget {
   const FirmwareUpdateSheet({super.key});
 
   @override
+  State<FirmwareUpdateSheet> createState() => _FirmwareUpdateSheetState();
+}
+
+class _FirmwareUpdateSheetState extends State<FirmwareUpdateSheet> {
+  bool _hasTriggeredCheck = false;
+
+  @override
   Widget build(BuildContext context) {
-    // Trigger a GitHub check when the sheet opens.
-    final state = context.read<RobotStateProvider>();
-    if (!state.checkingGitHubFirmware) {
-      state.checkGitHubFirmware();
+    // Trigger a GitHub check once when the sheet opens.
+    if (!_hasTriggeredCheck) {
+      _hasTriggeredCheck = true;
+      final state = context.read<RobotStateProvider>();
+      if (!state.checkingGitHubFirmware) {
+        state.checkGitHubFirmware();
+      }
     }
 
     return Selector<

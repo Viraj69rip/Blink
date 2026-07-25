@@ -33,6 +33,7 @@ class FirmwareUpdateService extends ChangeNotifier {
   String? _filePath;
   String? _error;
   bool _checkingGitHub = false;
+  bool _downloadingFirmware = false;
   String? _githubVersion;
   String? _githubAssetName;
   String? _githubAssetUrl;
@@ -66,8 +67,11 @@ class FirmwareUpdateService extends ChangeNotifier {
   /// pending file exists yet.
   void _evaluateUpdateAvailability() {
     _isUpdateAvailable = _isNewerVersion(_githubVersion, _robotVersion);
-    if (_isUpdateAvailable && !_hasPendingUpdate && _githubAssetUrl != null) {
-      unawaited(downloadGitHubFirmware());
+    if (_isUpdateAvailable &&
+        !_hasPendingUpdate &&
+        !_downloadingFirmware &&
+        _githubAssetUrl != null) {
+      unawaited(downloadGitHubFirmware().catchError((_) {}));
     }
     notifyListeners();
   }
@@ -188,9 +192,12 @@ class FirmwareUpdateService extends ChangeNotifier {
   /// Downloads the selected GitHub release and turns it into the same pending
   /// update used by a manually chosen file.
   Future<void> downloadGitHubFirmware() async {
+    if (_downloadingFirmware) return;
+    _downloadingFirmware = true;
     final url = _githubAssetUrl;
     final name = _githubAssetName;
     if (url == null || name == null) {
+      _downloadingFirmware = false;
       throw StateError('Check GitHub releases before downloading firmware.');
     }
 
@@ -217,6 +224,7 @@ class FirmwareUpdateService extends ChangeNotifier {
       notifyListeners();
       rethrow;
     } finally {
+      _downloadingFirmware = false;
       client.close(force: true);
     }
   }

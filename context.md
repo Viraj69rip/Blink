@@ -4,6 +4,19 @@ BLINK is a Flutter Android companion app and ESP32-C3 robot firmware. The app
 uses BLE (NimBLE on the robot, `flutter_blue_plus` in Flutter) and the OLED is
 128×64 pixels.
 
+## GitHub repository
+
+- **Repo:** `Viraj69rip/Blink` (public) — https://github.com/Viraj69rip/Blink
+- **Current release:** v3.1.0 — https://github.com/Viraj69rip/Blink/releases/tag/v3.1.0
+- **Release assets:**
+  - `BLINK_Firmware_v3.zip` (25 KB) — Arduino sketch + flash guide.
+  - `BLINK_App_v2_release.apk` (45.5 MB) — Android companion app.
+- **CI:** `.github/workflows/release.yml` auto-builds firmware `.bin` and APK
+  on every `v*` tag push. To cut a new release locally:
+  ```
+  git tag v3.2.0 && git push origin v3.2.0
+  ```
+
 ## Current release: firmware v3.1.0
 
 - The robot advertises as `BLINK_C3` with service UUID
@@ -24,8 +37,8 @@ uses BLE (NimBLE on the robot, `flutter_blue_plus` in Flutter) and the OLED is
   and sends a local notification once a day until the update installs.
 - Firmware version, OTA support, transfer status, and progress come directly
   from the robot BLE status characteristic.
-- Public GitHub releases can be enabled at build time with
-  `--dart-define=BLINK_GITHUB_REPOSITORY=owner/repository`. The app checks the
+- Public GitHub releases are enabled with
+  `--dart-define=BLINK_GITHUB_REPOSITORY=Viraj69rip/Blink`. The app checks the
   newest release, downloads its `.bin` asset, then queues it for BLE install.
 - `.github/workflows/release.yml` builds and publishes matching `.bin` and APK
   assets whenever a `v*` tag is pushed.
@@ -62,3 +75,5 @@ pixels match without rounded-dot rendering.
   daily reminders.
 - `blink_app/lib/widgets/drawing_canvas.dart` — pixel-accurate drawing UI.
 - `blink_app/lib/screens/settings_screen.dart` — update controls.
+- `.github/workflows/release.yml` — CI: builds firmware + APK on `v*` tags.
+- `.gitignore` — excludes build artifacts, APKs, IDE files from git.

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/robot_state_provider.dart';
 import '../theme/blink_theme.dart';
 import '../theme/blink_constants.dart';
+import '../widgets/firmware_update_sheet.dart';
 import '../widgets/pulsing_dot.dart';
 import '../widgets/robot_face.dart';
 import '../widgets/toggle_card.dart';
@@ -28,6 +29,9 @@ class CommandCenterScreen extends StatelessWidget {
 
           // ── Top Status Bar ─────────────────────────────────────
           const _StatusBar(),
+
+          // ── Update Available Banner ──────────────────────────────
+          const _UpdateBanner(),
 
           const SizedBox(height: BlinkConstants.sectionSpacing),
 
@@ -242,6 +246,111 @@ class _BatteryPainter extends CustomPainter {
   bool shouldRepaint(covariant _BatteryPainter oldDelegate) {
     return oldDelegate.level != level;
   }
+}
+
+/// Banner shown when the connected robot's firmware is older than the latest
+/// GitHub release.
+class _UpdateBanner extends StatelessWidget {
+  const _UpdateBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<RobotStateProvider, _UpdateBannerSnapshot>(
+      selector: (_, state) => _UpdateBannerSnapshot(
+        connected: state.connectionState == BleConnectionState.connected,
+        updateAvailable: state.isFirmwareUpdateAvailable,
+        robotVersion: state.installedFirmwareVersion,
+        githubVersion: state.githubFirmwareVersion,
+      ),
+      builder: (context, data, _) {
+        if (!data.connected || !data.updateAvailable) {
+          return const SizedBox.shrink();
+        }
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: GestureDetector(
+            onTap: () => _openFirmwareSheet(context),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: BlinkColors.accent.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: BlinkColors.accent.withValues(alpha: 0.25),
+                  width: 0.5,
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.system_update_rounded,
+                      color: BlinkColors.accent, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: RichText(
+                      text: TextSpan(
+                        style: BlinkTypography.monoSmall.copyWith(
+                          color: BlinkColors.textSecondary,
+                          fontSize: 11,
+                          height: 1.3,
+                        ),
+                        children: [
+                          const TextSpan(text: 'Update available  '),
+                          TextSpan(
+                            text: 'v${data.robotVersion} → v${data.githubVersion}',
+                            style: const TextStyle(
+                              color: BlinkColors.accent,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right_rounded,
+                      color: BlinkColors.textTertiary, size: 16),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _openFirmwareSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => const FirmwareUpdateSheet(),
+    );
+  }
+}
+
+class _UpdateBannerSnapshot {
+  final bool connected;
+  final bool updateAvailable;
+  final String? robotVersion;
+  final String? githubVersion;
+
+  const _UpdateBannerSnapshot({
+    required this.connected,
+    required this.updateAvailable,
+    this.robotVersion,
+    this.githubVersion,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is _UpdateBannerSnapshot &&
+      other.connected == connected &&
+      other.updateAvailable == updateAvailable &&
+      other.robotVersion == robotVersion &&
+      other.githubVersion == githubVersion;
+
+  @override
+  int get hashCode =>
+      Object.hash(connected, updateAvailable, robotVersion, githubVersion);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -41,6 +41,9 @@ class FirmwareUpdateService extends ChangeNotifier {
   String? _githubAssetUrl;
   String? _githubReleaseNotes;
   String? _githubError;
+  String? _robotVersion;
+  bool _isUpdateAvailable = false;
+  bool _notifiedUpdateAvailable = false;
 
   bool get hasPendingUpdate => _hasPendingUpdate;
   String? get fileName => _fileName;
@@ -52,6 +55,57 @@ class FirmwareUpdateService extends ChangeNotifier {
   String? get githubReleaseNotes => _githubReleaseNotes;
   String? get githubError => _githubError;
   bool get hasGitHubFirmware => _githubAssetUrl != null;
+  String? get robotVersion => _robotVersion;
+  bool get isUpdateAvailable => _isUpdateAvailable;
+
+  /// Called by RobotStateProvider whenever the BLE-reported firmware version changes.
+  void updateRobotVersion(String? version) {
+    _robotVersion = version;
+    if (version == null) _notifiedUpdateAvailable = false;
+    _evaluateUpdateAvailability();
+  }
+
+  /// Compares [githubVersion] with [robotVersion] and sets [_isUpdateAvailable].
+  /// Returns true when both versions are non-null and github > robot.
+  void _evaluateUpdateAvailability() {
+    _isUpdateAvailable = _isNewerVersion(_githubVersion, _robotVersion);
+    notifyListeners();
+  }
+
+  /// Simple x.y.z semver comparison — returns true iff [a] > [b].
+  static bool _isNewerVersion(String? a, String? b) {
+    if (a == null || b == null) return false;
+    final aParts = a.split('.');
+    final bParts = b.split('.');
+    for (var i = 0; i < 3; i++) {
+      final aVal = int.tryParse(i < aParts.length ? aParts[i] : '0') ?? 0;
+      final bVal = int.tryParse(i < bParts.length ? bParts[i] : '0') ?? 0;
+      if (aVal != bVal) return aVal > bVal;
+    }
+    return false;
+  }
+
+  /// Fires a one-shot local notification about an available firmware update.
+  Future<void> notifyUpdateAvailable() async {
+    if (_notifiedUpdateAvailable || !_isUpdateAvailable) return;
+    _notifiedUpdateAvailable = true;
+    await _requestNotificationPermission();
+    const details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'firmware_update_available',
+        'Firmware update available',
+        channelDescription: 'New BLINK firmware release detected',
+        importance: Importance.defaultImportance,
+        priority: Priority.defaultPriority,
+      ),
+    );
+    await _notifications.show(
+      102,
+      'BLINK update available',
+      'v$_robotVersion → v$_githubVersion — install from Settings.',
+      details,
+    );
+  }
 
   Future<void> initialize() async {
     if (_initialized) return;
@@ -120,6 +174,7 @@ class FirmwareUpdateService extends ChangeNotifier {
       if (_githubAssetUrl == null || _githubAssetName == null) {
         throw const FormatException('The GitHub firmware asset is incomplete.');
       }
+      _evaluateUpdateAvailability();
     } catch (error) {
       _githubAssetUrl = null;
       _githubError = error.toString().replaceFirst('Bad state: ', '');

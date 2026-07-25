@@ -337,7 +337,7 @@ class BleManager extends ChangeNotifier {
       _otaWaiter = null;
     } else if (value.startsWith('OTA:ERROR:')) {
       _firmwareUpdateMessage = 'Update failed: ${value.substring(10)}';
-      _otaWaiter?.completeError(StateError(_firmwareUpdateMessage));
+      _otaWaiter?.completeError(StateError(_firmwareUpdateMessage ?? 'OTA error'));
       _otaWaiter = null;
     }
     notifyListeners();

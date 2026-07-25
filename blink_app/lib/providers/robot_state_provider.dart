@@ -69,6 +69,8 @@ class RobotStateProvider extends ChangeNotifier {
   String? get githubFirmwareVersion => _firmware.githubVersion;
   String? get githubFirmwareAssetName => _firmware.githubAssetName;
   String? get githubFirmwareError => _firmware.githubError;
+  String? get robotFirmwareVersion => _firmware.robotVersion;
+  bool get isFirmwareUpdateAvailable => _firmware.isUpdateAvailable;
 
   bool get isRobotSynced =>
       _connectionState == BleConnectionState.connected &&
@@ -110,10 +112,29 @@ class RobotStateProvider extends ChangeNotifier {
       _currentExpression = 'Idle Core';
     }
 
+    _firmware.updateRobotVersion(_ble.firmwareVersion);
+
+    // Refresh GitHub release data on connect so version comparison is current.
+    if (_connectionState == BleConnectionState.connected) {
+      unawaited(_firmware.checkGitHubRelease());
+    }
+
+    // Fire local notification when we just connected and an update exists.
+    if (_connectionState == BleConnectionState.connected && _firmware.isUpdateAvailable) {
+      unawaited(_firmware.notifyUpdateAvailable());
+    }
+
     notifyListeners();
   }
 
-  void _onFirmwareChanged() => notifyListeners();
+  void _onFirmwareChanged() {
+    // If GitHub check finishes after connect and shows an update, notify.
+    if (_connectionState == BleConnectionState.connected &&
+        _firmware.isUpdateAvailable) {
+      unawaited(_firmware.notifyUpdateAvailable());
+    }
+    notifyListeners();
+  }
 
   // ── Connection Methods ───────────────────────────────────────
 

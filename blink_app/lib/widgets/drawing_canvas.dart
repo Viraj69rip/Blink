@@ -11,7 +11,8 @@ const int kOledWidth = 128;
 const int kOledHeight = 64;
 
 /// Minimum interval between BLE draw-line writes to avoid flooding.
-const Duration _kBleThrottle = Duration(milliseconds: 30);
+/// Reduced from 30ms to 8ms for ultra-low latency drawing (~125 Hz)
+const Duration _kBleThrottle = Duration(milliseconds: 8);
 
 /// A pixel-art drawing surface. Every visible white cell is an OLED pixel,
 /// and each emitted segment is the same integer line sent to the robot.

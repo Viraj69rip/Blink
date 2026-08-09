@@ -4,7 +4,7 @@ import '../providers/robot_state_provider.dart';
 import '../theme/blink_theme.dart';
 import '../theme/blink_constants.dart';
 import '../widgets/firmware_update_sheet.dart';
-import '../widgets/glass_container.dart';
+import '../widgets/blink_components.dart';
 
 /// Settings screen — device configuration, app preferences, and firmware info.
 class SettingsScreen extends StatefulWidget {
@@ -19,17 +19,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Selector<RobotStateProvider, (int, bool, bool)>(
-      selector: (_, state) => (
-        state.batteryLevel,
-        state.capacitiveTouchEnabled,
-        state.idleAnimationsEnabled,
-      ),
-      builder: (context, deviceState, _) {
-        final batteryLevel = deviceState.$1;
-        final capacitiveTouchEnabled = deviceState.$2;
-        final idleAnimationsEnabled = deviceState.$3;
-        final state = context.read<RobotStateProvider>();
+    return Consumer<RobotStateProvider>(
+      builder: (context, state, _) {
         return SingleChildScrollView(
           physics: const BouncingScrollPhysics(),
           padding: const EdgeInsets.symmetric(
@@ -46,21 +37,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: BlinkTypography.displayLarge,
               ),
               const SizedBox(height: 4),
-              Text(
-                'DEVICE & APP CONFIGURATION',
-                style: BlinkTypography.labelSmall.copyWith(
-                  letterSpacing: 3.0,
-                ),
-              ),
+              const SectionLabel(label: 'DEVICE & APP CONFIGURATION'),
 
               const SizedBox(height: 24),
 
               // ── Device Section ─────────────────────────────────────
-              const _SectionLabel(label: 'DEVICE'),
+              const SectionLabel(label: 'DEVICE'),
               const SizedBox(height: 10),
 
-              GlassContainer(
-                padding: const EdgeInsets.all(0),
+              GlassCard(
+                padding: EdgeInsets.zero,
                 child: Selector<RobotStateProvider,
                     (BleConnectionState, String, String?)>(
                   selector: (_, s) => (
@@ -82,12 +68,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                     return Column(
                       children: [
-                        _SettingsTile(
+                        SettingsTile(
                           icon: Icons.bluetooth_rounded,
                           title: 'Bluetooth',
                           subtitle: subtitle,
                           onTap: () async {
-                            final state = context.read<RobotStateProvider>();
                             if (connected) {
                               await state.disconnect();
                             } else if (!scanning) {
@@ -107,15 +92,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ),
                         ),
-                        const _Divider(),
-                        _SettingsTile(
+                        const BlinkDivider(),
+                        SettingsTile(
                           icon: Icons.schedule_rounded,
                           title: 'Sync Time',
                           subtitle: 'Push phone clock to robot RTC',
                           onTap: () async {
-                            await context
-                                .read<RobotStateProvider>()
-                                .syncTimeNow();
+                            await state.syncTimeNow();
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
@@ -130,17 +113,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             size: 18,
                           ),
                         ),
-                        const _Divider(),
-                        _SettingsTile(
+                        const BlinkDivider(),
+                        SettingsTile(
                           icon: Icons.battery_charging_full_rounded,
                           title: 'Battery',
-                          subtitle: '$batteryLevel% remaining',
+                          subtitle: '${state.batteryLevel}% remaining',
                           trailing: Text(
-                            '$batteryLevel%',
+                            '${state.batteryLevel}%',
                             style: BlinkTypography.mono.copyWith(fontSize: 13),
                           ),
                         ),
-                        const _Divider(),
+                        const BlinkDivider(),
                         const _FirmwareUpdateTile(),
                       ],
                     );
@@ -151,14 +134,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(height: 20),
 
               // ── Display Section ────────────────────────────────────
-              const _SectionLabel(label: 'DISPLAY'),
+              const SectionLabel(label: 'DISPLAY'),
               const SizedBox(height: 10),
 
-              GlassContainer(
-                padding: const EdgeInsets.all(0),
+              GlassCard(
+                padding: EdgeInsets.zero,
                 child: Column(
                   children: [
-                    _SettingsToggleTile(
+                    SettingsToggleTile(
                       icon: Icons.brightness_6_rounded,
                       title: 'Auto Brightness',
                       subtitle: 'Adjust OLED based on ambient light',
@@ -169,14 +152,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         });
                       },
                     ),
-                    const _Divider(),
-                    _SettingsToggleTile(
+                    const BlinkDivider(),
+                    SettingsToggleTile(
                       icon: Icons.animation_rounded,
                       title: 'Idle Animations',
                       subtitle: 'Smooth ambient face expressions',
-                      value: idleAnimationsEnabled,
+                      value: state.idleAnimationsEnabled,
                       onChanged: (val) {
                         state.setIdleAnimations(val);
+                      },
+                    ),
+                    const BlinkDivider(),
+                    SettingsToggleTile(
+                      icon: Icons.volume_up_rounded,
+                      title: 'Buzzer Sound',
+                      subtitle: 'Enable sound effects for expressions',
+                      value: true, // TODO: Connect to robot buzzer state
+                      onChanged: (val) {
+                        state.setBuzzerEnabled(val);
                       },
                     ),
                   ],
@@ -185,23 +178,87 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
               const SizedBox(height: 20),
 
-              // ── Sensors Section ────────────────────────────────────
-              const _SectionLabel(label: 'SENSORS'),
+              // ── Weather & Mood Section ─────────────────────────────
+              const SectionLabel(label: 'WEATHER & MOOD'),
               const SizedBox(height: 10),
 
-              GlassContainer(
-                padding: const EdgeInsets.all(0),
+              GlassCard(
+                padding: EdgeInsets.zero,
+                child: Consumer<RobotStateProvider>(
+                  builder: (context, provider, _) {
+                    final moodData = provider.weatherMoodData;
+                    return Column(
+                      children: [
+                        SettingsTile(
+                          icon: Icons.wb_sunny_rounded,
+                          title: 'Auto Mood Sync',
+                          subtitle: moodData != null
+                              ? '${moodData.moodLabel} • ${moodData.weather.condition} ${moodData.weather.temperature.toInt()}°C'
+                              : 'Syncing weather…',
+                          trailing: Icon(
+                            moodData != null ? Icons.check_circle : Icons.sync,
+                            color: moodData != null
+                                ? BlinkColors.accent
+                                : BlinkColors.textTertiary,
+                            size: 20,
+                          ),
+                        ),
+                        const BlinkDivider(),
+                        SettingsTile(
+                          icon: Icons.refresh_rounded,
+                          title: 'Sync Now',
+                          subtitle: 'Force weather & time sync to robot',
+                          onTap: () async {
+                            await provider.forceWeatherSync();
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Weather & time sync sent'),
+                                ),
+                              );
+                            }
+                          },
+                          trailing: const Icon(
+                            Icons.sync_rounded,
+                            color: BlinkColors.textTertiary,
+                            size: 18,
+                          ),
+                        ),
+                        const BlinkDivider(),
+                        SettingsToggleTile(
+                          icon: Icons.schedule_rounded,
+                          title: 'Auto Sync',
+                          subtitle: 'Automatically sync weather every 30 min',
+                          value: true,
+                          onChanged: (val) {
+                            provider.setWeatherAutoSync(val);
+                          },
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              // ── Sensors Section ────────────────────────────────────
+              const SectionLabel(label: 'SENSORS'),
+              const SizedBox(height: 10),
+
+              GlassCard(
+                padding: EdgeInsets.zero,
                 child: Column(
                   children: [
-                    _SettingsToggleTile(
+                    SettingsToggleTile(
                       icon: Icons.touch_app_rounded,
                       title: 'Capacitive Touch',
                       subtitle: 'Enable petting interactions',
-                      value: capacitiveTouchEnabled,
+                      value: state.capacitiveTouchEnabled,
                       onChanged: (_) => state.toggleCapacitiveTouch(),
                     ),
-                    const _Divider(),
-                    _SettingsTile(
+                    const BlinkDivider(),
+                    SettingsTile(
                       icon: Icons.sensors_rounded,
                       title: 'Sensitivity',
                       subtitle: 'Medium',
@@ -224,15 +281,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
               const SizedBox(height: 20),
 
-              // ── About Section ──────────────────────────────────────
-              const _SectionLabel(label: 'APP'),
+              // ── App Section ────────────────────────────────────────
+              const SectionLabel(label: 'APP'),
               const SizedBox(height: 10),
 
-              GlassContainer(
-                padding: const EdgeInsets.all(0),
+              GlassCard(
+                padding: EdgeInsets.zero,
                 child: Column(
                   children: [
-                    _SettingsTile(
+                    SettingsTile(
                       icon: Icons.info_outline_rounded,
                       title: 'App Version',
                       subtitle: 'BLINK Companion v5.0.0',
@@ -241,10 +298,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         style: BlinkTypography.monoSmall,
                       ),
                     ),
-                    const _Divider(),
+                    const BlinkDivider(),
                     const _AppUpdateTile(),
-                    const _Divider(),
-                    _SettingsTile(
+                    const BlinkDivider(),
+                    SettingsTile(
                       icon: Icons.description_rounded,
                       title: 'Licenses',
                       subtitle: 'Open-source licenses',
@@ -262,8 +319,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         size: 20,
                       ),
                     ),
-                    const _Divider(),
-                    _SettingsTile(
+                    const BlinkDivider(),
+                    SettingsTile(
                       icon: Icons.restart_alt_rounded,
                       title: 'Factory Reset',
                       subtitle: 'Reset robot to defaults',
@@ -381,9 +438,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
 // ── HELPER WIDGETS ─────────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
 
 class _FirmwareUpdateTile extends StatelessWidget {
   const _FirmwareUpdateTile();
@@ -444,7 +501,7 @@ class _FirmwareUpdateTile extends StatelessWidget {
                                 ? 'Update v$githubVersion available'
                                 : 'Installed v$version';
 
-        return _SettingsTile(
+        return SettingsTile(
           icon: Icons.system_update_alt_rounded,
           title: 'Firmware Update',
           subtitle: subtitle,
@@ -522,14 +579,13 @@ class _AppUpdateTile extends StatelessWidget {
                             ? 'v$version available — tap to download'
                             : 'App is up to date';
 
-        return _SettingsTile(
+        return SettingsTile(
           icon: Icons.system_update_rounded,
           title: 'Update App',
           subtitle: subtitle,
           onTap: () async {
             if (downloading || checking) return;
             if (downloaded) {
-              // Trigger Android package installer
               final apkPath = state.pendingApkPath;
               if (apkPath != null) {
                 _installApk(context, apkPath);
@@ -573,8 +629,6 @@ class _AppUpdateTile extends StatelessWidget {
   }
 
   void _installApk(BuildContext context, String apkPath) {
-    // Use Android intent to install APK via platform channel.
-    // Since open_filex may not be available, we use a process-based approach.
     try {
       final uri = Uri.file(apkPath);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -609,162 +663,5 @@ class _AppUpdateTile extends StatelessWidget {
         SnackBar(content: Text('Could not open installer: $e')),
       );
     }
-  }
-}
-
-class _SectionLabel extends StatelessWidget {
-  final String label;
-  const _SectionLabel({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      label,
-      style: BlinkTypography.labelSmall.copyWith(
-        letterSpacing: 3.0,
-      ),
-    );
-  }
-}
-
-class _Divider extends StatelessWidget {
-  const _Divider();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 0.5,
-      margin: const EdgeInsets.symmetric(horizontal: 16),
-      color: Colors.white.withValues(alpha: 0.06),
-    );
-  }
-}
-
-class _SettingsTile extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final Widget? trailing;
-  final VoidCallback? onTap;
-
-  const _SettingsTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    this.trailing,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(icon, color: BlinkColors.textSecondary, size: 20),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title,
-                      style:
-                          BlinkTypography.titleMedium.copyWith(fontSize: 14)),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: BlinkTypography.monoSmall.copyWith(
-                      color: BlinkColors.textTertiary,
-                      fontSize: 10,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (trailing != null) trailing!,
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SettingsToggleTile extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  const _SettingsToggleTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.value,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: value
-                  ? BlinkColors.accent.withValues(alpha: 0.1)
-                  : Colors.white.withValues(alpha: 0.06),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(
-              icon,
-              color: value ? BlinkColors.accent : BlinkColors.textSecondary,
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title,
-                    style: BlinkTypography.titleMedium.copyWith(fontSize: 14)),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  style: BlinkTypography.monoSmall.copyWith(
-                    color: BlinkColors.textTertiary,
-                    fontSize: 10,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          SizedBox(
-            height: 28,
-            child: Switch(
-              value: value,
-              onChanged: onChanged,
-              activeThumbColor: BlinkColors.accent,
-              activeTrackColor: BlinkColors.accent.withValues(alpha: 0.3),
-              inactiveThumbColor: BlinkColors.textTertiary,
-              inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }

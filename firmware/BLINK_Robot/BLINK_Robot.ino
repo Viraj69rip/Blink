@@ -62,21 +62,25 @@ static const uint32_t TICKLE_MS         = 2200;
 static const uint32_t DIZZY_MS          = 3200;
 static const uint32_t YAWN_MS           = 3200;   // yawn build → peak → settle
 static const uint32_t SLEEP_MS          = 120000; // 2 minutes deep sleep
-static const uint32_t FRAME_MS          = 20;    // ~50 FPS — smooth OLED motion
-static const uint32_t SENSOR_MS         = 30;
+static const uint32_t FRAME_MS          = 16;    // ~60 FPS — ultra-smooth OLED motion
+static const uint32_t SENSOR_MS         = 20;    // faster sensor polling
 static const uint32_t TIME_REFRESH_MS   = 1000;
-static const uint32_t STATE_NOTIFY_MS   = 100;   // ~10 Hz live preview sync to app
+static const uint32_t STATE_NOTIFY_MS   = 50;    // ~20 Hz live preview sync to app
 static const uint32_t NIGHT_CHECK_MS    = 35000; // roll for sleepy yawn ~every 35s
 static const uint8_t  NIGHT_YAWN_CHANCE = 22;    // % chance per check (22% ≈ once / ~2.5 min)
 static const int      NIGHT_START_HOUR  = 22;    // 10 PM
 static const int      NIGHT_END_HOUR    = 6;     // 6 AM
-static const float    SHAKE_THRESHOLD   = 1.12f; // total acceleration threshold in g
-static const float    SHAKE_DELTA_G     = 0.24f; // sudden motion above the resting baseline
-static const float    SHAKE_GYRO_DPS    = 150.0f; // rotational shake threshold
-static const uint32_t SHAKE_COOLDOWN_MS = 900;  // prevents repeated dizzy restarts
-static const uint32_t TAP_MAX_MS        = 350;   // max touch duration counted as tap
-static const uint32_t TAP_GAP_MS        = 420;   // max gap between taps in a gesture
-static const uint32_t TAP_SETTLE_MS     = 480;   // idle time before gesture fires
+static const float    SHAKE_THRESHOLD   = 1.08f; // total acceleration threshold in g (more sensitive)
+static const float    SHAKE_DELTA_G     = 0.18f; // sudden motion above the resting baseline (more sensitive)
+static const float    SHAKE_GYRO_DPS    = 120.0f; // rotational shake threshold (more sensitive)
+static const uint32_t SHAKE_COOLDOWN_MS = 600;  // prevents repeated dizzy restarts (faster recovery)
+static const uint32_t TAP_MAX_MS        = 300;   // max touch duration counted as tap
+static const uint32_t TAP_GAP_MS        = 350;   // max gap between taps in a gesture
+static const uint32_t TAP_SETTLE_MS     = 400;   // idle time before gesture fires
+static const uint32_t LONG_PRESS_MS     = 1800;  // hold to return to main face
+
+// Drawing BLE throttle - reduced for ultra-low latency
+static const uint32_t DRAW_BLE_THROTTLE_MS = 8; // ~125 Hz max draw updates
 
 static const int OLED_W = 128;
 static const int OLED_H = 64;
@@ -133,8 +137,25 @@ bool timeSynced = false;
 bool touchEnabled = true;
 bool focusActive = false;
 bool drawMode = false;
+bool buzzerEnabled = true;  // Buzzer mute/unmute
 char stopwatchText[16] = "";   // optional "MM:SS" overlay from app
 bool idleAnimationsEnabled = true;
+
+// BLE pairing animation state
+enum BlePairState : uint8_t {
+  BLE_PAIR_IDLE = 0,
+  BLE_PAIR_SCANNING,
+  BLE_PAIR_CONNECTING,
+  BLE_PAIR_CONNECTED,
+  BLE_PAIR_FAILED
+};
+BlePairState blePairState = BLE_PAIR_IDLE;
+uint32_t blePairAnimStartAt = 0;
+uint32_t blePairStateEnteredAt = 0;
+
+// Weather/mood sync from app
+int8_t weatherMood = 0;  // -2=sad, -1=gloomy, 0=neutral, 1=happy, 2=excited
+uint32_t lastWeatherSyncAt = 0;
 
 // OLED display mode selected from on-robot touch menu
 enum DisplayMode : uint8_t {
@@ -307,6 +328,20 @@ static const ToneStep SOUND_DIZZY[] = {{330, 80, 20}, {294, 80, 20}, {247, 120, 
 static const ToneStep SOUND_FOCUS_DONE[] = {{784, 90, 30}, {784, 90, 30}, {1047, 180, 0}};
 static const ToneStep SOUND_CUSTOM[] = {{523, 100, 20}, {659, 100, 20}, {880, 150, 40}, {1047, 200, 0}};
 
+// Expression sound effects - matching dasai mochi / chotubot style
+static const ToneStep SOUND_HAPPY[] = {{659, 60, 15}, {784, 60, 15}, {1047, 60, 15}, {1319, 120, 0}};
+static const ToneStep SOUND_SAD[] = {{392, 120, 30}, {330, 150, 30}, {294, 200, 0}};
+static const ToneStep SOUND_ANGRY[] = {{220, 80, 15}, {247, 80, 15}, {277, 80, 15}, {311, 150, 0}};
+static const ToneStep SOUND_LOVE[] = {{523, 80, 20}, {659, 80, 20}, {784, 80, 20}, {1047, 180, 0}};
+static const ToneStep SOUND_SLEEP[] = {{392, 200, 50}, {349, 200, 50}, {330, 300, 0}};
+static const ToneStep SOUND_WAKE[] = {{523, 80, 20}, {659, 80, 20}, {784, 80, 20}, {1047, 150, 0}};
+static const ToneStep SOUND_PAIRING[] = {{659, 50, 15}, {784, 50, 15}, {880, 50, 15}, {1047, 50, 15}, {1319, 100, 0}};
+static const ToneStep SOUND_CONNECTED[] = {{784, 80, 20}, {1047, 80, 20}, {1319, 150, 0}};
+static const ToneStep SOUND_DISCONNECTED[] = {{392, 100, 20}, {349, 100, 20}, {330, 150, 0}};
+static const ToneStep SOUND_MENU_OPEN[] = {{523, 60, 15}, {659, 60, 0}};
+static const ToneStep SOUND_MENU_SELECT[] = {{784, 50, 10}, {1047, 80, 0}};
+static const ToneStep SOUND_TAP[] = {{1047, 30, 0}};
+
 // Pending BLE payloads (set in callbacks, handled in loop — keep callbacks short)
 volatile bool pendingTime = false;
 volatile bool pendingCmd = false;
@@ -329,7 +364,7 @@ void notifyOtaStatus(const char* status) {
 }
 
 void playCustomSound(const ToneStep* steps, uint8_t count) {
-  if (PIN_BUZZER < 0 || steps == nullptr || count == 0) return;
+  if (PIN_BUZZER < 0 || steps == nullptr || count == 0 || !buzzerEnabled) return;
   activeTone = steps;
   activeToneCount = count;
   activeToneIndex = 0;
@@ -438,6 +473,20 @@ void enterState(RobotState next) {
     playCustomSound(SOUND_TICKLE, sizeof(SOUND_TICKLE) / sizeof(SOUND_TICKLE[0]));
   } else if (next == STATE_DIZZY) {
     playCustomSound(SOUND_DIZZY, sizeof(SOUND_DIZZY) / sizeof(SOUND_DIZZY[0]));
+  } else if (next == STATE_HAPPY) {
+    playCustomSound(SOUND_HAPPY, sizeof(SOUND_HAPPY) / sizeof(SOUND_HAPPY[0]));
+  } else if (next == STATE_SAD) {
+    playCustomSound(SOUND_SAD, sizeof(SOUND_SAD) / sizeof(SOUND_SAD[0]));
+  } else if (next == STATE_ANGRY) {
+    playCustomSound(SOUND_ANGRY, sizeof(SOUND_ANGRY) / sizeof(SOUND_ANGRY[0]));
+  } else if (next == STATE_LOVE) {
+    playCustomSound(SOUND_LOVE, sizeof(SOUND_LOVE) / sizeof(SOUND_LOVE[0]));
+  } else if (next == STATE_YAWN) {
+    playCustomSound(SOUND_SLEEP, sizeof(SOUND_SLEEP) / sizeof(SOUND_SLEEP[0]));
+  } else if (next == STATE_SLEEP) {
+    // Sleep is silent - just the yawn sound was played
+  } else if (next == STATE_BOOT) {
+    playCustomSound(SOUND_BOOT, sizeof(SOUND_BOOT) / sizeof(SOUND_BOOT[0]));
   }
 
   notifyRobotState(true);
@@ -2461,6 +2510,84 @@ void drawAppModeScreen(uint32_t t) {
   u8g2.drawStr(36, 49, "hold = home");
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BLE Pairing Animation — matches website OLED simulator 'app' mode
+// ═══════════════════════════════════════════════════════════════════════════
+
+void drawBlePairingScreen(uint32_t t) {
+  u8g2.setDrawColor(1);
+  float sec = t / 1000.0f;
+  uint32_t elapsed = t - blePairAnimStartAt;
+  float p = clampf(elapsed / 3000.0f, 0.0f, 1.0f); // 3 second animation
+  
+  // "BLINK" text with fade-in
+  u8g2.setFont(u8g2_font_7x13B_tr);
+  int w1 = u8g2.getStrWidth("BLINK");
+  int x1 = (OLED_W - w1) / 2;
+  int y1 = 14;
+  
+  if (p < 0.3f) {
+    float tp = p / 0.3f;
+    int tx = x1 + (int)((1.0f - tp) * 20.0f);
+    u8g2.drawStr(tx, y1, "BLINK");
+  } else {
+    u8g2.drawStr(x1, y1, "BLINK");
+  }
+  
+  // Status text
+  u8g2.setFont(u8g2_font_4x6_tr);
+  const char* stat;
+  if (blePairState == BLE_PAIR_SCANNING) stat = "SCANNING...";
+  else if (blePairState == BLE_PAIR_CONNECTING) stat = "CONNECTING...";
+  else if (blePairState == BLE_PAIR_CONNECTED) stat = "CONNECTED!";
+  else stat = "FAILED";
+  
+  int w2 = u8g2.getStrWidth(stat);
+  u8g2.drawStr((OLED_W - w2) / 2, 22, stat);
+  
+  // Animated bars (5 bars like website demo)
+  for (int i = 0; i < 5; i++) {
+    float baseH = 19.2f * ((i + 1) / 5.0f);
+    float phaseOffset = i * 1.2f;
+    float bh = baseH + sinf(sec * 3.0f + phaseOffset) * 2.5f;
+    
+    // Add connection progress visualization
+    if (blePairState == BLE_PAIR_CONNECTING) {
+      bh = baseH * p + sinf(sec * 4.0f + phaseOffset) * 1.5f;
+    } else if (blePairState == BLE_PAIR_CONNECTED) {
+      bh = baseH + sinf(sec * 2.0f + phaseOffset) * 1.0f;
+    }
+    
+    int bx = 32 + i * 13;
+    int h = (int)bh;
+    if (h < 1) h = 1;
+    
+    if (blePairState == BLE_PAIR_FAILED || (blePairState == BLE_PAIR_SCANNING && i > 2)) {
+      u8g2.drawFrame(bx, 46 - h, 6, h);
+    } else {
+      u8g2.drawBox(bx, 46 - h, 6, h);
+    }
+  }
+  
+  // Floating dot (like website)
+  int dotX = 64 + (int)(cosf(sec * 1.5f) * 10.0f);
+  int dotY = 32 + (int)(sinf(sec * 1.8f) * 4.0f);
+  u8g2.drawDisc(dotX, dotY, 2);
+  u8g2.drawCircle(dotX, dotY, 4);
+  
+  // Sparkle particles on connect
+  if (blePairState == BLE_PAIR_CONNECTED) {
+    for (int i = 0; i < 6; i++) {
+      float sp = fmodf(sec * 2.0f + i * 1.05f, 1.0f);
+      int sx = 64 + (int)(cosf(sp * 6.283f) * (15.0f + 20.0f * p));
+      int sy = 32 + (int)(sinf(sp * 6.283f + i) * (8.0f + 12.0f * p));
+      if (sx > 2 && sx < 126 && sy > 2 && sy < 62) {
+        u8g2.drawDisc(sx, sy, 1);
+      }
+    }
+  }
+}
+
 void renderFrame() {
   uint32_t now = millis();
   uint32_t inState = now - stateEnteredAt;
@@ -2470,6 +2597,8 @@ void renderFrame() {
 
   if (menuOpen) {
     drawMenuScreen();
+  } else if (blePairState != BLE_PAIR_IDLE) {
+    drawBlePairingScreen(now);
   } else {
     switch (state) {
       case STATE_BOOT:
@@ -2563,12 +2692,23 @@ bool readShake() {
   float gyroDps = sqrtf(g.gyro.x * g.gyro.x + g.gyro.y * g.gyro.y +
                         g.gyro.z * g.gyro.z) * 57.29578f;
 
-  // Simplified and robust shake detection:
-  // If the total g-force exceeds the shake threshold OR rotational speed is very high
-  bool shook = gForce > SHAKE_THRESHOLD || gyroDps > SHAKE_GYRO_DPS;
+  // Establish baseline on first valid reads
+  if (!mpuBaselineReady) {
+    mpuBaselineG = gForce;
+    mpuBaselineReady = true;
+  }
+
+  // Advanced shake detection: combine absolute threshold + delta from baseline + gyro spike
+  float deltaG = fabsf(gForce - mpuBaselineG);
+  
+  // Slowly adapt baseline to handle orientation changes (low-pass filter)
+  mpuBaselineG = mpuBaselineG * 0.995f + gForce * 0.005f;
+
+  // Shake detected if: total g-force exceeds threshold OR sudden delta from baseline OR high rotation
+  bool shook = (gForce > SHAKE_THRESHOLD) || (deltaG > SHAKE_DELTA_G) || (gyroDps > SHAKE_GYRO_DPS);
   
   if (shook) {
-    Serial.printf("[MPU] SHAKE! g=%.2f gyro=%.0f\n", gForce, gyroDps);
+    Serial.printf("[MPU] SHAKE! g=%.2f delta=%.2f gyro=%.0f\n", gForce, deltaG, gyroDps);
   }
   return shook;
 }
@@ -2796,11 +2936,22 @@ void updateStateMachine() {
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
     bleConnected = true;
+    // Trigger pairing animation
+    blePairState = BLE_PAIR_CONNECTING;
+    blePairAnimStartAt = millis();
+    blePairStateEnteredAt = millis();
+    playCustomSound(SOUND_CONNECTED, sizeof(SOUND_CONNECTED) / sizeof(SOUND_CONNECTED[0]));
   }
   void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
     bleConnected = false;
+    // Show disconnected animation briefly
+    blePairState = BLE_PAIR_FAILED;
+    blePairAnimStartAt = millis();
+    playCustomSound(SOUND_DISCONNECTED, sizeof(SOUND_DISCONNECTED) / sizeof(SOUND_DISCONNECTED[0]));
     // Robot keeps running offline with last RTC + sensors
     NimBLEDevice::startAdvertising();
+    // Reset pairing animation after a delay
+    // (handled in loop via state machine)
   }
 };
 
@@ -2959,6 +3110,15 @@ void handlePendingBle() {
       playCustomSound(SOUND_BOOT, sizeof(SOUND_BOOT) / sizeof(SOUND_BOOT[0]));
     } else if (strcmp(cmdBuf, "SOUND:STOP") == 0) {
       stopCustomSound();
+    } else if (strcmp(cmdBuf, "BUZZER:ON") == 0) {
+      buzzerEnabled = true;
+    } else if (strcmp(cmdBuf, "BUZZER:OFF") == 0) {
+      buzzerEnabled = false;
+      stopCustomSound();
+    } else if (strncmp(cmdBuf, "MOOD:", 5) == 0) {
+      const char* moodArg = cmdBuf + 5;
+      weatherMood = clampi(atoi(moodArg), -2, 2);
+      lastWeatherSyncAt = millis();
     } else if (strncmp(cmdBuf, "ANIM:", 5) == 0) {
       const char* animArg = cmdBuf + 5;
       if (strcmp(animArg, "OFF") == 0) {
@@ -3014,7 +3174,10 @@ void handlePendingBle() {
     pendingDraw = false;
     // Only process draw data if draw mode was explicitly enabled via DRAW command
     // This prevents stray/leftover BLE packets from auto-enabling draw mode
-    if (drawMode) {
+    // Throttle draw processing to avoid overwhelming the OLED
+    static uint32_t lastDrawProcessAt = 0;
+    if (drawMode && (millis() - lastDrawProcessAt >= DRAW_BLE_THROTTLE_MS)) {
+      lastDrawProcessAt = millis();
       parseDrawPayload(drawBuf);
     }
   }
@@ -3177,6 +3340,20 @@ void loop() {
   updateCustomSound();
   notifyRobotState();
   maybeRestartAfterOta();
+  
+  // BLE pairing animation state machine
+  if (blePairState == BLE_PAIR_CONNECTING && bleConnected) {
+    blePairState = BLE_PAIR_CONNECTED;
+    blePairAnimStartAt = millis();
+  } else if (blePairState == BLE_PAIR_CONNECTED && millis() - blePairAnimStartAt > 3000) {
+    blePairState = BLE_PAIR_IDLE;
+  } else if (blePairState == BLE_PAIR_FAILED && millis() - blePairAnimStartAt > 2000) {
+    blePairState = BLE_PAIR_IDLE;
+  } else if (blePairState == BLE_PAIR_SCANNING && bleConnected) {
+    blePairState = BLE_PAIR_CONNECTING;
+    blePairAnimStartAt = millis();
+    playCustomSound(SOUND_CONNECTED, sizeof(SOUND_CONNECTED) / sizeof(SOUND_CONNECTED[0]));
+  }
 
   uint32_t now = millis();
   if (now - lastFrameAt >= FRAME_MS) {

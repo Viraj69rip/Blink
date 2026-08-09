@@ -8,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../models/robot_animation_snapshot.dart';
 import '../services/ble_manager.dart';
 import '../services/firmware_update_service.dart';
+import '../services/weather_mood_service.dart';
 import '../theme/blink_constants.dart';
 
 /// Connection state of the robot.
@@ -21,26 +22,43 @@ enum BleConnectionState {
 /// Manages all reactive state for the BLINK robot companion.
 class RobotStateProvider extends ChangeNotifier
     with WidgetsBindingObserver {
-  RobotStateProvider({BleManager? ble, FirmwareUpdateService? firmware})
-      : _ble = ble ?? BleManager.instance,
-        _firmware = firmware ?? FirmwareUpdateService.instance {
+  RobotStateProvider({
+    BleManager? ble,
+    FirmwareUpdateService? firmware,
+    WeatherMoodService? weatherMood,
+  })  : _ble = ble ?? BleManager.instance,
+        _firmware = firmware ?? FirmwareUpdateService.instance,
+        _weatherMood = weatherMood ?? WeatherMoodService.instance {
     WidgetsBinding.instance.addObserver(this);
     _ble.addListener(_onBleChanged);
     _firmware.addListener(_onFirmwareChanged);
     unawaited(_firmware.initialize());
     _onBleChanged();
     unawaited(_requestPermissionsOnStartup());
+    unawaited(_initializeWeatherMood());
+  }
+
+  Future<void> _initializeWeatherMood() async {
+    await _weatherMood.initialize();
+    // Listen for weather mood changes
+    _weatherMood.addListener(_onWeatherMoodChanged);
+  }
+
+  void _onWeatherMoodChanged() {
+    notifyListeners();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_firmware.checkGitHubRelease());
+      unawaited(_weatherMood.forceSync());
     }
   }
 
   final BleManager _ble;
   final FirmwareUpdateService _firmware;
+  final WeatherMoodService _weatherMood;
 
   bool _connectedSinceLastGithubCheck = false;
 
@@ -98,6 +116,15 @@ class RobotStateProvider extends ChangeNotifier
   String? get pendingApkPath => _firmware.pendingApkPath;
 
   Future<void> downloadAppUpdate() => _firmware.downloadAppUpdate();
+
+  // ── Weather & Mood Sync ────────────────────────────────────────
+  WeatherMoodData? get weatherMoodData => _weatherMood.currentMoodData;
+  bool get isWeatherSyncing => _weatherMood.isSyncing;
+  String? get weatherSyncError => _weatherMood.lastError;
+  DateTime? get lastWeatherSyncTime => _weatherMood.lastSyncTime;
+
+  Future<void> forceWeatherSync() => _weatherMood.forceSync();
+  void setWeatherAutoSync(bool enabled) => _weatherMood.setAutoSync(enabled);
 
   bool get isRobotSynced =>
       _connectionState == BleConnectionState.connected &&
@@ -230,6 +257,10 @@ class RobotStateProvider extends ChangeNotifier
     await _ble.sendCommand(enabled ? 'ANIM:ON' : 'ANIM:OFF');
   }
 
+  Future<void> setBuzzerEnabled(bool enabled) async {
+    await _ble.sendCommand(enabled ? 'BUZZER:ON' : 'BUZZER:OFF');
+  }
+
   // ── Expression / sound ───────────────────────────────────────
 
   Future<void> setExpression(String expression) async {
@@ -358,6 +389,7 @@ class RobotStateProvider extends ChangeNotifier
     WidgetsBinding.instance.removeObserver(this);
     _ble.removeListener(_onBleChanged);
     _firmware.removeListener(_onFirmwareChanged);
+    _weatherMood.removeListener(_onWeatherMoodChanged);
     _timer?.cancel();
     _stopwatchSync?.cancel();
     super.dispose();

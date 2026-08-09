@@ -5,6 +5,8 @@ import '../providers/robot_state_provider.dart';
 import '../theme/blink_constants.dart';
 import '../theme/blink_theme.dart';
 import '../widgets/drawing_canvas.dart';
+import '../widgets/touch_gesture_detector.dart';
+import '../widgets/blink_components.dart';
 
 /// Drawing page — sketches are mapped to the robot's 128×64 OLED over BLE.
 class DrawingScreen extends StatefulWidget {
@@ -24,76 +26,97 @@ class _DrawingScreenState extends State<DrawingScreen> {
       (s) => s.connectionState == BleConnectionState.connected,
     );
 
-    return Padding(
-      padding: EdgeInsets.fromLTRB(
-        BlinkConstants.paddingH,
-        MediaQuery.of(context).padding.top + 16,
-        BlinkConstants.paddingH,
-        120,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Draw', style: BlinkTypography.displayLarge),
-          const SizedBox(height: 4),
-          Text(
-            'PIXEL GRID · 128 × 64 OLED',
-            style: BlinkTypography.labelSmall.copyWith(letterSpacing: 3),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            connected
-                ? 'Each white cell matches a real OLED pixel on BLINK.'
-                : 'Connect to BLINK to draw on the matching OLED pixel grid.',
-            style: BlinkTypography.bodyMedium.copyWith(
-              color: BlinkColors.textSecondary,
+    return TouchGestureDetector(
+      enabled: connected,
+      onSingleTap: () {
+        // Single tap - selection (handled by canvas)
+      },
+      onDoubleTap: () {
+        // Double tap - show menu or exit draw mode
+        if (connected) {
+          context.read<RobotStateProvider>().exitDrawMode();
+        }
+      },
+      onTripleTap: () {
+        // Triple tap - back to command center
+        // Navigate to first tab (command center)
+        // This would require access to the parent navigator
+      },
+      onLongPress: () {
+        // Long press - home/reset to idle
+        context.read<RobotStateProvider>().exitDrawMode();
+      },
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          BlinkConstants.paddingH,
+          MediaQuery.of(context).padding.top + 16,
+          BlinkConstants.paddingH,
+          120,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Draw', style: BlinkTypography.displayLarge),
+            const SizedBox(height: 4),
+            Text(
+              'PIXEL GRID · 128 × 64 OLED',
+              style: BlinkTypography.labelSmall.copyWith(letterSpacing: 3),
             ),
-          ),
-          const SizedBox(height: 12),
-
-          // ── Expression Panel ──
-          _ExpressionPanel(enabled: connected),
-
-          const SizedBox(height: 10),
-
-          // ── Canvas ──
-          Expanded(
-            child: DrawingCanvas(
-              key: _canvasKey,
-              enabled: connected,
+            const SizedBox(height: 8),
+            Text(
+              connected
+                  ? 'Each white cell matches a real OLED pixel on BLINK.'
+                  : 'Connect to BLINK to draw on the matching OLED pixel grid.',
+              style: BlinkTypography.bodyMedium.copyWith(
+                color: BlinkColors.textSecondary,
+              ),
             ),
-          ),
+            const SizedBox(height: 12),
 
-          const SizedBox(height: 14),
+            // ── Expression Panel ──
+            _ExpressionPanel(enabled: connected),
 
-          // ── Action buttons ──
-          Row(
-            children: [
-              Expanded(
-                child: _ActionButton(
-                  label: 'CLEAR',
-                  icon: Icons.delete_outline_rounded,
-                  onTap: () async {
-                    await _canvasKey.currentState?.clearAll();
-                    if (context.mounted) {
-                      await context.read<RobotStateProvider>().clearDrawing();
-                    }
-                  },
-                ),
+            const SizedBox(height: 10),
+
+            // ── Canvas ──
+            Expanded(
+              child: DrawingCanvas(
+                key: _canvasKey,
+                enabled: connected,
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _ActionButton(
-                  label: 'EXIT DRAW',
-                  icon: Icons.close_rounded,
-                  accent: false,
-                  onTap: () =>
-                      context.read<RobotStateProvider>().exitDrawMode(),
+            ),
+
+            const SizedBox(height: 14),
+
+            // ── Action buttons ──
+            Row(
+              children: [
+                Expanded(
+                  child: ActionButton(
+                    label: 'CLEAR',
+                    icon: Icons.delete_outline_rounded,
+                    onTap: () async {
+                      await _canvasKey.currentState?.clearAll();
+                      if (context.mounted) {
+                        await context.read<RobotStateProvider>().clearDrawing();
+                      }
+                    },
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ],
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ActionButton(
+                    label: 'EXIT DRAW',
+                    icon: Icons.close_rounded,
+                    accent: false,
+                    onTap: () =>
+                        context.read<RobotStateProvider>().exitDrawMode(),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -207,64 +230,6 @@ class _ExpressionButtonState extends State<_ExpressionButton>
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ActionButton extends StatelessWidget {
-  const _ActionButton({
-    required this.label,
-    required this.icon,
-    required this.onTap,
-    this.accent = true,
-  });
-
-  final String label;
-  final IconData icon;
-  final VoidCallback onTap;
-  final bool accent;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: accent
-          ? BlinkColors.accent.withValues(alpha: 0.15)
-          : BlinkColors.surface,
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: accent
-                  ? BlinkColors.accent.withValues(alpha: 0.5)
-                  : BlinkColors.cardBorder,
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                icon,
-                size: 18,
-                color: accent ? BlinkColors.accent : BlinkColors.textSecondary,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                label,
-                style: BlinkTypography.labelSmall.copyWith(
-                  color:
-                      accent ? BlinkColors.accent : BlinkColors.textSecondary,
-                  letterSpacing: 1.5,
-                ),
-              ),
-            ],
-          ),
         ),
       ),
     );

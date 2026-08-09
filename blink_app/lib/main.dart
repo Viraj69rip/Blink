@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:provider/provider.dart';
 
 import 'providers/robot_state_provider.dart';
 import 'services/firmware_update_service.dart';
+import 'services/weather_mood_service.dart';
 import 'theme/blink_theme.dart';
 
 import 'navigation/blink_nav_bar.dart';
@@ -50,6 +52,7 @@ class BlinkApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => RobotStateProvider()),
+        ChangeNotifierProvider.value(value: WeatherMoodService.instance),
       ],
       child: MaterialApp(
         title: 'BLINK',
@@ -64,6 +67,13 @@ class BlinkApp extends StatelessWidget {
           // Disable default Material splash/ripple for custom interactions
           splashFactory: NoSplash.splashFactory,
           highlightColor: Colors.transparent,
+          // Custom page transitions
+          pageTransitionsTheme: const PageTransitionsTheme(
+            builders: {
+              TargetPlatform.android: CupertinoPageTransitionsBuilder(),
+              TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+            },
+          ),
         ),
         home: const SplashScreen(
           child: BlinkHome(),

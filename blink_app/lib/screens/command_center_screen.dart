@@ -8,6 +8,7 @@ import '../widgets/pulsing_dot.dart';
 import '../widgets/robot_face.dart';
 import '../widgets/toggle_card.dart';
 import '../widgets/focus_timer_overlay.dart';
+import '../widgets/ble_connection_animation.dart';
 
 /// The Command Center — primary dashboard view for BLINK.
 /// Displays connection status, live robot face preview, sensor controls,
@@ -17,60 +18,66 @@ class CommandCenterScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      physics: const BouncingScrollPhysics(),
-      padding: const EdgeInsets.symmetric(
-        horizontal: BlinkConstants.paddingH,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(height: MediaQuery.of(context).padding.top + 16),
-
-          // ── Top Status Bar ─────────────────────────────────────
-          const _StatusBar(),
-
-          // ── Update Available Banner ──────────────────────────────
-          const _UpdateBanner(),
-
-          const SizedBox(height: BlinkConstants.sectionSpacing),
-
-          // ── Section Label ──────────────────────────────────────
-          Text(
-            'LIVE PREVIEW',
-            style: BlinkTypography.labelSmall.copyWith(
-              letterSpacing: 3.0,
-            ),
+    return Stack(
+      children: [
+        SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          padding: const EdgeInsets.symmetric(
+            horizontal: BlinkConstants.paddingH,
           ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(height: MediaQuery.of(context).padding.top + 16),
 
-          const SizedBox(height: 10),
+              // ── Top Status Bar ─────────────────────────────────────
+              const _StatusBar(),
 
-          // ── Hero Live Preview ──────────────────────────────────
-          const _HeroPreview(),
+              // ── Update Available Banner ──────────────────────────────
+              const _UpdateBanner(),
 
-          const SizedBox(height: BlinkConstants.sectionSpacing + 4),
+              const SizedBox(height: BlinkConstants.sectionSpacing),
 
-          // ── Bento Grid Label ───────────────────────────────────
-          Text(
-            'CONTROLS',
-            style: BlinkTypography.labelSmall.copyWith(
-              letterSpacing: 3.0,
-            ),
+              // ── Section Label ──────────────────────────────────────
+              Text(
+                'LIVE PREVIEW',
+                style: BlinkTypography.labelSmall.copyWith(
+                  letterSpacing: 3.0,
+                ),
+              ),
+
+              const SizedBox(height: 10),
+
+              // ── Hero Live Preview ──────────────────────────────────
+              const _HeroPreview(),
+
+              const SizedBox(height: BlinkConstants.sectionSpacing + 4),
+
+              // ── Bento Grid Label ───────────────────────────────────
+              Text(
+                'CONTROLS',
+                style: BlinkTypography.labelSmall.copyWith(
+                  letterSpacing: 3.0,
+                ),
+              ),
+
+              const SizedBox(height: 10),
+
+              // ── Sensor & Utility Grid (Bento Box) ──────────────────
+              const _BentoGrid(),
+
+              const SizedBox(height: BlinkConstants.sectionSpacing + 4),
+
+              // ── Connect / Disconnect ───────────────────────────────
+              const _ConnectButton(),
+
+              const SizedBox(height: 120),
+            ],
           ),
-
-          const SizedBox(height: 10),
-
-          // ── Sensor & Utility Grid (Bento Box) ──────────────────
-          const _BentoGrid(),
-
-          const SizedBox(height: BlinkConstants.sectionSpacing + 4),
-
-          // ── Connect / Disconnect ───────────────────────────────
-          const _ConnectButton(),
-
-          const SizedBox(height: 120),
-        ],
-      ),
+        ),
+        // BLE Connection Animation Overlay
+        const _BleConnectionOverlay(),
+      ],
     );
   }
 }
@@ -892,13 +899,53 @@ class _TimerSnapshot {
       other.timerRunning == timerRunning &&
       other.seconds == seconds;
 
-  @override
+@override
   int get hashCode => Object.hash(timerRunning, seconds);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// ── BLE CONNECTION OVERLAY ───────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+
+class _BleConnectionOverlay extends StatelessWidget {
+  const _BleConnectionOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<RobotStateProvider, BleConnectionState>(
+      selector: (_, s) => s.connectionState,
+      builder: (context, conn, _) {
+        BleConnectionAnimState animState;
+        switch (conn) {
+          case BleConnectionState.scanning:
+            animState = BleConnectionAnimState.scanning;
+            break;
+          case BleConnectionState.connected:
+            animState = BleConnectionAnimState.connected;
+            break;
+          default:
+            animState = BleConnectionAnimState.idle;
+        }
+        
+        // Only show overlay during active connection states
+        if (animState == BleConnectionAnimState.idle) {
+          return const SizedBox.shrink();
+        }
+
+        return BleConnectionOverlay(
+          state: animState,
+          onDismiss: () {
+            // Overlay will auto-hide when state changes
+          },
+        );
+      },
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // ── DEPLOY BUTTON ──────────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
 
 class _ConnectButton extends StatelessWidget {
   const _ConnectButton();

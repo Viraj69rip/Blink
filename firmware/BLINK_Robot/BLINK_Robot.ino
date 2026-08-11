@@ -77,7 +77,7 @@ static const uint32_t SHAKE_COOLDOWN_MS = 600;  // prevents repeated dizzy resta
 static const uint32_t TAP_MAX_MS        = 300;   // max touch duration counted as tap
 static const uint32_t TAP_GAP_MS        = 350;   // max gap between taps in a gesture
 static const uint32_t TAP_SETTLE_MS     = 400;   // idle time before gesture fires
-static const uint32_t LONG_PRESS_MS     = 1800;  // hold to return to main face
+static const uint32_t LONG_PRESS_MS     = 2000;  // hold to return to main face
 
 // Drawing BLE throttle - reduced for ultra-low latency
 static const uint32_t DRAW_BLE_THROTTLE_MS = 8; // ~125 Hz max draw updates
@@ -189,7 +189,6 @@ uint32_t tapWindowStart = 0;
 uint32_t lastGestureAt = 0;
 
 // Long-press detection: hold from any menu screen to return to the main face.
-static const uint32_t LONG_PRESS_MS = 2000;
 bool longPressTriggered = false;
 
 // ─── Idle Animation Pool (Mochi-style varied expressions) ────────────────

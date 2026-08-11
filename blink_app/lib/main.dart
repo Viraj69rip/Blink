@@ -1,10 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:provider/provider.dart';
 
 import 'providers/robot_state_provider.dart';
-import 'services/firmware_update_service.dart';
 import 'services/weather_mood_service.dart';
 import 'theme/blink_theme.dart';
 
@@ -22,12 +23,14 @@ import 'screens/about_screen.dart';
 /// powered by ESP32-C3 with BLE connectivity.
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await FirmwareUpdateService.instance.initialize();
 
-  // Lock to portrait orientation for optimal layout
-  SystemChrome.setPreferredOrientations([
+  // Never gate the first frame on platform services.  In particular, Android
+  // can recreate the activity after an OTA/install intent while plugins are
+  // still attaching.  RobotStateProvider starts the non-critical background
+  // services once the widget tree is alive.
+  unawaited(SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
-  ]);
+  ]));
 
   // Set system UI overlay style — pure black status bar
   SystemChrome.setSystemUIOverlayStyle(

@@ -1,30 +1,12 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
-import '../theme/blink_theme.dart';
 import '../theme/blink_constants.dart';
+import '../theme/blink_theme.dart';
 
-/// BLE Connection Animation Widget
-/// Matches the website OLED simulator 'app' mode animation
-/// Shows animated bars, floating dot, and sparkle particles on connect
-class BleConnectionAnimation extends StatefulWidget {
-  const BleConnectionAnimation({
-    super.key,
-    required this.state,
-    this.size = 200,
-    this.onComplete,
-  });
-
-  final BleConnectionAnimState state;
-  final double size;
-  final VoidCallback? onComplete;
-
-  @override
-  State<BleConnectionAnimation> createState() => _BleConnectionAnimationState();
-}
-
+/// States shown by the BLINK pairing OLED simulation.
 enum BleConnectionAnimState {
   idle,
   scanning,
@@ -33,302 +15,407 @@ enum BleConnectionAnimState {
   failed,
 }
 
+/// The pairing animation uses the same 128 x 64 "app mode" composition as
+/// the OLED simulator on the BLINK website: wordmark, status, five signal
+/// bars and a soft orbiting status light.
+///
+/// [size] is the outer width. The widget maintains the OLED's 2:1 ratio rather
+/// than stretching the animation into a square.
+class BleConnectionAnimation extends StatefulWidget {
+  const BleConnectionAnimation({
+    super.key,
+    required this.state,
+    this.size = 280,
+    this.onComplete,
+  });
+
+  final BleConnectionAnimState state;
+  final double size;
+  final VoidCallback? onComplete;
+
+  @override
+  State<BleConnectionAnimation> createState() =>
+      _BleConnectionAnimationState();
+}
+
 class _BleConnectionAnimationState extends State<BleConnectionAnimation>
     with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _progress;
-  late Animation<double> _pulse;
-  late Animation<double> _dotOrbit;
+  late final AnimationController _controller;
+  Timer? _completionTimer;
+  bool _completionSent = false;
 
   @override
   void initState() {
     super.initState();
-    
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 3000),
+      duration: _durationFor(widget.state),
     );
-    
-    _progress = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
-    );
-    
-    _pulse = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
-    
-    _dotOrbit = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.linear),
-    );
+    _playFor(widget.state);
+  }
 
-    _controller.addStatusListener((status) {
-      if (status == AnimationStatus.completed && widget.state == BleConnectionAnimState.connected) {
+  Duration _durationFor(BleConnectionAnimState state) => switch (state) {
+        BleConnectionAnimState.scanning => const Duration(milliseconds: 1500),
+        BleConnectionAnimState.connecting => const Duration(milliseconds: 1750),
+        BleConnectionAnimState.connected => const Duration(milliseconds: 2200),
+        BleConnectionAnimState.failed => const Duration(milliseconds: 1300),
+        BleConnectionAnimState.idle => const Duration(milliseconds: 1800),
+      };
+
+  void _playFor(BleConnectionAnimState state) {
+    _completionTimer?.cancel();
+    _completionSent = false;
+    _controller
+      ..stop()
+      ..duration = _durationFor(state)
+      ..value = 0;
+
+    switch (state) {
+      case BleConnectionAnimState.idle:
+        break;
+      case BleConnectionAnimState.failed:
+        _controller.repeat(reverse: true);
+      case BleConnectionAnimState.scanning:
+      case BleConnectionAnimState.connecting:
+      case BleConnectionAnimState.connected:
+        _controller.repeat();
+    }
+
+    if (state == BleConnectionAnimState.connected && widget.onComplete != null) {
+      // Let the successful connection read clearly before the overlay exits.
+      _completionTimer = Timer(const Duration(milliseconds: 1150), () {
+        if (!mounted || _completionSent) return;
+        _completionSent = true;
         widget.onComplete?.call();
-      }
-    });
+      });
+    }
   }
 
   @override
   void didUpdateWidget(covariant BleConnectionAnimation oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.state != widget.state) {
-      _controller.reset();
-      _controller.forward();
+      _playFor(widget.state);
     }
   }
 
   @override
   void dispose() {
+    _completionTimer?.cancel();
     _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: Listenable.merge([_progress, _pulse, _dotOrbit]),
-      builder: (context, _) {
-        final progress = _progress.value;
-        final pulse = _pulse.value;
-        final dotOrbit = _dotOrbit.value;
-        
-        return CustomPaint(
-          size: Size(widget.size, widget.size),
-          painter: _BleConnectionPainter(
-            state: widget.state,
-            progress: progress,
-            pulse: pulse,
-            dotOrbit: dotOrbit,
-            size: widget.size,
+    final disableAnimations = MediaQuery.maybeOf(context)?.disableAnimations ??
+        false;
+    final outerWidth = widget.size.clamp(160.0, 520.0);
+    final inset = (outerWidth * 0.045).clamp(8.0, 16.0);
+
+    return Semantics(
+      liveRegion: true,
+      label: '${_statusFor(widget.state).label} BLINK connection status',
+      child: RepaintBoundary(
+        child: SizedBox(
+          width: outerWidth,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF202534), Color(0xFF0B0D13)],
+              ),
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.36),
+                  blurRadius: 28,
+                  offset: const Offset(0, 14),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: EdgeInsets.all(inset),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(13),
+                child: AspectRatio(
+                  aspectRatio: 2,
+                  child: AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, _) => CustomPaint(
+                      painter: _BleOledPainter(
+                        state: widget.state,
+                        phase: disableAnimations ? 0.32 : _controller.value,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 }
 
-class _BleConnectionPainter extends CustomPainter {
-  final BleConnectionAnimState state;
-  final double progress;
-  final double pulse;
-  final double dotOrbit;
-  final double size;
+class _ConnectionStatus {
+  const _ConnectionStatus(this.label, this.color);
 
-  _BleConnectionPainter({
+  final String label;
+  final Color color;
+}
+
+_ConnectionStatus _statusFor(BleConnectionAnimState state) => switch (state) {
+      BleConnectionAnimState.idle =>
+        const _ConnectionStatus('READY', BlinkColors.textTertiary),
+      BleConnectionAnimState.scanning =>
+        const _ConnectionStatus('SCANNING', BlinkColors.oledAccent),
+      BleConnectionAnimState.connecting =>
+        const _ConnectionStatus('CONNECTING', BlinkColors.oledAccent),
+      BleConnectionAnimState.connected =>
+        const _ConnectionStatus('CONNECTED', BlinkColors.oledAccent),
+      BleConnectionAnimState.failed =>
+        const _ConnectionStatus('NOT FOUND', BlinkColors.danger),
+    };
+
+class _BleOledPainter extends CustomPainter {
+  const _BleOledPainter({
     required this.state,
-    required this.progress,
-    required this.pulse,
-    required this.dotOrbit,
-    required this.size,
+    required this.phase,
   });
 
+  final BleConnectionAnimState state;
+  final double phase;
+
   @override
-  void paint(Canvas canvas, Size canvasSize) {
-    final centerX = size / 2;
-    final centerY = size / 2;
-    final scale = size / 200.0; // Base design size is 200
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    canvas.drawRect(Offset.zero & size, Paint()..color = Colors.black);
 
-    // Background (OLED black)
-    final bgPaint = Paint()..color = Colors.black;
-    canvas.drawRect(Rect.fromLTWH(0, 0, size, size), bgPaint);
+    canvas.save();
+    canvas.scale(size.width / 128, size.height / 64);
+    _paintOled(canvas);
+    canvas.restore();
+  }
 
-    // Draw "BLINK" text
-    final textStyle = TextStyle(
-      color: Colors.white,
-      fontSize: 28 * scale,
-      fontWeight: FontWeight.w700,
-      letterSpacing: 4,
-      fontFamily: 'monospace',
-    );
-    
-    final textSpan = TextSpan(text: 'BLINK', style: textStyle);
-    final textPainter = TextPainter(
-      text: textSpan,
-      textDirection: TextDirection.ltr,
-    )..layout();
-    
-    final textX = centerX - textPainter.width / 2;
-    final textY = 20 * scale;
-    
-    // Fade in text during connecting
-    double textOpacity = 1.0;
-    if (state == BleConnectionAnimState.connecting) {
-      textOpacity = progress < 0.3 ? progress / 0.3 : 1.0;
-    }
-    textPainter.paint(
-      canvas, 
-      Offset(textX, textY),
-      opacity: textOpacity.clamp(0.0, 1.0),
-    );
+  void _paintOled(Canvas canvas) {
+    final status = _statusFor(state);
+    final t = phase * 2 * pi;
+    final isConnected = state == BleConnectionAnimState.connected;
+    final isConnecting = state == BleConnectionAnimState.connecting;
+    final isScanning = state == BleConnectionAnimState.scanning;
+    final isFailed = state == BleConnectionAnimState.failed;
 
-    // Status text
-    String statusText;
-    Color statusColor = Colors.white;
-    
-    switch (state) {
-      case BleConnectionAnimState.scanning:
-        statusText = 'SCANNING...';
-        statusColor = Colors.amber;
-        break;
-      case BleConnectionAnimState.connecting:
-        statusText = 'CONNECTING...';
-        statusColor = Colors.cyanAccent;
-        break;
-      case BleConnectionAnimState.connected:
-        statusText = 'CONNECTED!';
-        statusColor = BlinkColors.accent;
-        break;
-      case BleConnectionAnimState.failed:
-        statusText = 'FAILED';
-        statusColor = Colors.redAccent;
-        break;
-      default:
-        statusText = '';
-    }
+    final reveal = isConnecting
+        ? Curves.easeOutCubic.transform((phase * 2.25).clamp(0.0, 1.0))
+        : 1.0;
+    final wordmarkAlpha = isConnecting
+        ? Curves.easeOut.transform((phase * 3.3).clamp(0.0, 1.0))
+        : 1.0;
 
-    if (statusText.isNotEmpty) {
-      final statusStyle = TextStyle(
-        color: statusColor,
-        fontSize: 10 * scale,
-        fontWeight: FontWeight.w500,
+    _paintCenteredText(
+      canvas,
+      'BLINK',
+      top: 7,
+      style: TextStyle(
+        color: BlinkColors.textPrimary.withValues(alpha: wordmarkAlpha),
         fontFamily: 'monospace',
-        letterSpacing: 1.5,
-      );
-      final statusSpan = TextSpan(text: statusText, style: statusStyle);
-      final statusPainter = TextPainter(
-        text: statusSpan,
-        textDirection: TextDirection.ltr,
-      )..layout();
-      statusPainter.paint(
+        fontWeight: FontWeight.w700,
+        fontSize: 11.5,
+        letterSpacing: 2.35,
+      ),
+    );
+    _paintCenteredText(
+      canvas,
+      status.label,
+      top: 21,
+      style: TextStyle(
+        color: status.color.withValues(alpha: isFailed ? 0.85 : 0.72),
+        fontFamily: 'monospace',
+        fontWeight: FontWeight.w600,
+        fontSize: 5.5,
+        letterSpacing: 1.25,
+      ),
+    );
+
+    _paintSignalBars(
+      canvas,
+      t: t,
+      reveal: reveal,
+      color: status.color,
+      animate: !isFailed,
+      intensity: isScanning ? 1.5 : (isConnected ? 0.62 : 1.0),
+      failed: isFailed,
+    );
+
+    final center = Offset(64, 35);
+    final orbitX = center.dx + cos(t * (isScanning ? 1.35 : 0.75)) * 10;
+    final orbitY = center.dy + sin(t * (isScanning ? 1.65 : 0.9)) * 3.8;
+    final dot = isFailed
+        ? Offset(64, 35)
+        : Offset(orbitX, orbitY);
+    final breath = 0.5 + 0.5 * sin(t * (isScanning ? 2.4 : 1.5));
+    _paintStatusDot(
+      canvas,
+      center: dot,
+      color: status.color,
+      intensity: isFailed ? 0.35 : (0.65 + breath * 0.35),
+    );
+
+    if (isScanning || isConnecting) {
+      _paintSearchingRings(
         canvas,
-        Offset(centerX - statusPainter.width / 2, 40 * scale),
+        center: center,
+        color: status.color,
+        phase: phase,
       );
     }
+    if (isConnected) {
+      _paintConnectedSparkles(canvas, t: t, color: status.color);
+    }
+    if (isFailed) {
+      _paintRetryMark(canvas, color: status.color, phase: phase);
+    }
+  }
 
-    // Animated bars (5 bars like website demo)
-    const int barCount = 5;
-    for (int i = 0; i < barCount; i++) {
-      final baseHeight = 19.2 * scale * ((i + 1) / barCount);
-      final phaseOffset = i * 1.2;
-      
-      double barHeight;
-      if (state == BleConnectionAnimState.connecting) {
-        barHeight = baseHeight * progress + 
-            sin(dotOrbit * 2 * pi * 4 + phaseOffset) * 1.5 * scale;
-      } else if (state == BleConnectionAnimState.connected) {
-        barHeight = baseHeight + 
-            sin(dotOrbit * 2 * pi * 2 + phaseOffset) * 1.0 * scale;
-      } else if (state == BleConnectionAnimState.scanning) {
-        barHeight = baseHeight + 
-            sin(dotOrbit * 2 * pi * 3 + phaseOffset) * 2.5 * scale;
+  void _paintSignalBars(
+    Canvas canvas, {
+    required double t,
+    required double reveal,
+    required Color color,
+    required bool animate,
+    required double intensity,
+    required bool failed,
+  }) {
+    const barWidth = 6.0;
+    const gap = 7.0;
+    const baseY = 51.0;
+    const startX = 34.0;
+    for (var index = 0; index < 5; index++) {
+      final baseHeight = 4 + index * 3.8;
+      final wobble = animate ? sin(t * 2.7 + index * 1.2) * intensity : 0.0;
+      final height = max(2.0, (baseHeight + wobble) * reveal);
+      final rect = Rect.fromLTWH(
+        startX + index * (barWidth + gap),
+        baseY - height,
+        barWidth,
+        height,
+      );
+      if (failed && index > 1) {
+        canvas.drawRect(
+          rect,
+          Paint()
+            ..color = BlinkColors.textPrimary.withValues(alpha: 0.18)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 0.7,
+        );
       } else {
-        // Failed - outline only for bars beyond 2
-        barHeight = baseHeight;
+        canvas.drawRect(
+          rect,
+          Paint()
+            ..color = color.withValues(alpha: 0.38 + index * 0.11),
+        );
       }
-      
-      final h = barHeight.clamp(1.0 * scale, double.infinity);
-      final bx = (32 + i * 13) * scale;
-      final barX = centerX - (barCount * 13 / 2) * scale + i * 13 * scale;
-      final barY = (46 - h) * scale;
-      final barW = 6 * scale;
+    }
+  }
 
-      final barPaint = Paint()
-        ..color = (state == BleConnectionAnimState.failed && i > 2) 
-            ? Colors.white.withValues(alpha: 0.3) 
-            : (state == BleConnectionAnimState.connected 
-                ? BlinkColors.accent.withValues(alpha: 0.8 + 0.2 * sin(dotOrbit * 2 * pi))
-                : Colors.white.withValues(alpha: 0.4 + (i / barCount) * 0.6));
-      
-      if (state == BleConnectionAnimState.failed && i > 2) {
-        // Draw frame only
-        final framePaint = Paint()
-          ..color = Colors.white.withValues(alpha: 0.3)
+  void _paintStatusDot(
+    Canvas canvas, {
+    required Offset center,
+    required Color color,
+    required double intensity,
+  }) {
+    for (final ring in <double>[7.0, 4.8]) {
+      canvas.drawCircle(
+        center,
+        ring,
+        Paint()..color = color.withValues(alpha: 0.035 * intensity),
+      );
+    }
+    canvas.drawCircle(
+      center,
+      2.45,
+      Paint()..color = color.withValues(alpha: 0.28 * intensity),
+    );
+    canvas.drawCircle(center, 1.3, Paint()..color = color);
+  }
+
+  void _paintSearchingRings(
+    Canvas canvas, {
+    required Offset center,
+    required Color color,
+    required double phase,
+  }) {
+    for (var index = 0; index < 2; index++) {
+      final p = (phase + index * 0.48) % 1.0;
+      canvas.drawCircle(
+        center,
+        6 + p * 15,
+        Paint()
+          ..color = color.withValues(alpha: (1 - p) * 0.16)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 1;
-        canvas.drawRect(
-          Rect.fromLTWH(barX, barY, barW, h),
-          framePaint,
-        );
-      } else {
-        canvas.drawRect(
-          Rect.fromLTWH(barX, barY, barW, h),
-          barPaint,
-        );
-      }
+          ..strokeWidth = 0.75,
+      );
     }
+  }
 
-    // Floating dot (like website)
-    final dotRadius = 2.5 * scale;
-    final orbitRadius = 10 * scale;
-    final dotX = centerX + cos(dotOrbit * 2 * pi * 1.5) * orbitRadius;
-    final dotY = centerY - 8 * scale + sin(dotOrbit * 2 * pi * 1.8) * 4 * scale;
+  void _paintConnectedSparkles(
+    Canvas canvas, {
+    required double t,
+    required Color color,
+  }) {
+    for (var index = 0; index < 5; index++) {
+      final angle = t * 0.45 + index * (2 * pi / 5);
+      final distance = 15 + sin(t * 1.6 + index) * 2.5;
+      final center = Offset(
+        64 + cos(angle) * distance,
+        35 + sin(angle) * distance * 0.42,
+      );
+      canvas.drawCircle(
+        center,
+        0.75 + (index.isEven ? 0.35 : 0),
+        Paint()..color = color.withValues(alpha: 0.42),
+      );
+    }
+  }
 
-    // Dot glow
-    final glowPaint = Paint()
-      ..color = state == BleConnectionAnimState.connected 
-          ? BlinkColors.accent 
-          : (state == BleConnectionAnimState.connecting 
-              ? Colors.cyanAccent 
-              : Colors.amber)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 8 * scale);
-    canvas.drawCircle(Offset(dotX, dotY), dotRadius * 2, glowPaint);
-
-    // Dot core
-    final dotPaint = Paint()
-      ..color = state == BleConnectionAnimState.connected 
-          ? BlinkColors.accent 
-          : (state == BleConnectionAnimState.connecting 
-              ? Colors.cyanAccent 
-              : Colors.amber);
-    canvas.drawCircle(Offset(dotX, dotY), dotRadius, dotPaint);
-
-    // Outer ring
-    final ringPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.2)
+  void _paintRetryMark(Canvas canvas,
+      {required Color color, required double phase}) {
+    final alpha = 0.45 + phase * 0.35;
+    final paint = Paint()
+      ..color = color.withValues(alpha: alpha)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
-    canvas.drawCircle(Offset(dotX, dotY), dotRadius * 2, ringPaint);
+      ..strokeWidth = 1.2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(const Offset(61, 32), const Offset(67, 38), paint);
+    canvas.drawLine(const Offset(67, 32), const Offset(61, 38), paint);
+  }
 
-    // Sparkle particles on connect
-    if (state == BleConnectionAnimState.connected && progress > 0.3) {
-      final sparkleProgress = (progress - 0.3) / 0.7;
-      for (int i = 0; i < 6; i++) {
-        final sp = (dotOrbit * 2 + i * 1.05) % 1.0;
-        final radius = (15.0 + 20.0 * sparkleProgress) * scale;
-        final sx = centerX + cos(sp * 2 * pi) * radius;
-        final sy = centerY - 8 * scale + sin(sp * 2 * pi + i) * (8.0 + 12.0 * sparkleProgress) * scale;
-        
-        if (sx > 2 * scale && sx < size - 2 * scale && sy > 2 * scale && sy < size - 2 * scale) {
-          final sparklePaint = Paint()
-            ..color = BlinkColors.accent.withValues(alpha: 0.8 * (1.0 - sparkleProgress));
-          canvas.drawCircle(Offset(sx, sy), 1.5 * scale, sparklePaint);
-        }
-      }
-    }
-
-    // Pulsing ring on connect
-    if (state == BleConnectionAnimState.connected) {
-      final ringRadius = (20 + 30 * pulse) * scale;
-      final ringAlpha = (1.0 - pulse) * 0.4;
-      final pulsePaint = Paint()
-        ..color = BlinkColors.accent.withValues(alpha: ringAlpha)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2 * scale;
-      canvas.drawCircle(Offset(centerX, centerY - 8 * scale), ringRadius, pulsePaint);
-    }
+  void _paintCenteredText(
+    Canvas canvas,
+    String text, {
+    required double top,
+    required TextStyle style,
+  }) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      textScaler: TextScaler.noScaling,
+    )..layout();
+    painter.paint(canvas, Offset(64 - painter.width / 2, top));
   }
 
   @override
-  bool shouldRepaint(covariant _BleConnectionPainter oldDelegate) {
-    return oldDelegate.state != state ||
-        oldDelegate.progress != progress ||
-        oldDelegate.pulse != pulse ||
-        oldDelegate.dotOrbit != dotOrbit;
-  }
+  bool shouldRepaint(covariant _BleOledPainter oldDelegate) =>
+      oldDelegate.state != state || oldDelegate.phase != phase;
 }
 
-/// Overlay widget for BLE connection state with animation
-class BleConnectionOverlay extends StatelessWidget {
+/// Full-screen pairing feedback. It hides itself after a successful pairing so
+/// a connected robot never leaves an invisible input-blocking overlay behind.
+class BleConnectionOverlay extends StatefulWidget {
   const BleConnectionOverlay({
     super.key,
     required this.state,
@@ -339,77 +426,83 @@ class BleConnectionOverlay extends StatelessWidget {
   final VoidCallback? onDismiss;
 
   @override
+  State<BleConnectionOverlay> createState() => _BleConnectionOverlayState();
+}
+
+class _BleConnectionOverlayState extends State<BleConnectionOverlay> {
+  bool _dismissed = false;
+
+  @override
+  void didUpdateWidget(covariant BleConnectionOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.state != widget.state) _dismissed = false;
+  }
+
+  void _dismiss() {
+    if (_dismissed) return;
+    setState(() => _dismissed = true);
+    widget.onDismiss?.call();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (state == BleConnectionAnimState.idle) {
+    if (_dismissed || widget.state == BleConnectionAnimState.idle) {
       return const SizedBox.shrink();
     }
 
-    return Container(
-      color: Colors.black.withValues(alpha: 0.9),
+    final status = _statusFor(widget.state);
+    return ColoredBox(
+      color: Colors.black.withValues(alpha: 0.94),
       child: SafeArea(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            BleConnectionAnimation(
-              state: state,
-              size: 280,
-              onComplete: state == BleConnectionAnimState.connected ? onDismiss : null,
-            ),
-            const SizedBox(height: 32),
-            Text(
-              _getStatusText(state),
-              style: BlinkTypography.mono.copyWith(
-                fontSize: 16,
-                letterSpacing: 3,
-                color: _getStatusColor(state),
-              ),
-            ),
-            if (state == BleConnectionAnimState.failed) ...[
-              const SizedBox(height: 24),
-              TextButton(
-                onPressed: onDismiss,
-                child: Text(
-                  'TRY AGAIN',
-                  style: BlinkTypography.labelSmall.copyWith(
-                    color: BlinkColors.accent,
-                    letterSpacing: 2,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                BleConnectionAnimation(
+                  state: widget.state,
+                  size: 300,
+                  onComplete: widget.state == BleConnectionAnimState.connected
+                      ? _dismiss
+                      : null,
+                ),
+                const SizedBox(height: 28),
+                Text(
+                  _overlayMessage(widget.state),
+                  textAlign: TextAlign.center,
+                  style: BlinkTypography.mono.copyWith(
+                    color: status.color,
+                    fontSize: 13,
+                    letterSpacing: 2.1,
                   ),
                 ),
-              ),
-            ],
-          ],
+                if (widget.state == BleConnectionAnimState.failed) ...[
+                  const SizedBox(height: 20),
+                  TextButton(
+                    onPressed: _dismiss,
+                    child: Text(
+                      'CLOSE',
+                      style: BlinkTypography.labelSmall.copyWith(
+                        color: BlinkColors.textPrimary,
+                        letterSpacing: 2,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );
   }
 
-  String _getStatusText(BleConnectionAnimState state) {
-    switch (state) {
-      case BleConnectionAnimState.scanning:
-        return 'SCANNING FOR BLINK...';
-      case BleConnectionAnimState.connecting:
-        return 'CONNECTING...';
-      case BleConnectionAnimState.connected:
-        return 'CONNECTED!';
-      case BleConnectionAnimState.failed:
-        return 'CONNECTION FAILED';
-      default:
-        return '';
-    }
-  }
-
-  Color _getStatusColor(BleConnectionAnimState state) {
-    switch (state) {
-      case BleConnectionAnimState.scanning:
-        return Colors.amber;
-      case BleConnectionAnimState.connecting:
-        return Colors.cyanAccent;
-      case BleConnectionAnimState.connected:
-        return BlinkColors.accent;
-      case BleConnectionAnimState.failed:
-        return Colors.redAccent;
-      default:
-        return Colors.white;
-    }
-  }
+  String _overlayMessage(BleConnectionAnimState state) => switch (state) {
+        BleConnectionAnimState.scanning => 'LOOKING FOR BLINK',
+        BleConnectionAnimState.connecting => 'SECURING CONNECTION',
+        BleConnectionAnimState.connected => 'BLINK IS READY',
+        BleConnectionAnimState.failed => 'BLINK WAS NOT FOUND',
+        BleConnectionAnimState.idle => '',
+      };
 }

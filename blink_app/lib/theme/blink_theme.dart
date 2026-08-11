@@ -32,6 +32,12 @@ class BlinkColors {
 
   /// Divider color
   static const Color divider = Color(0x0DFFFFFF);
+
+  /// OLED-style glow accent — bright cyan-white for active BLE states
+  static const Color oledAccent = Color(0xFF33CCFF);
+
+  /// Danger / error color for failed states
+  static const Color danger = Color(0xFFFF4444);
 }
 
 /// Typography system using platform-native sans-serif + monospace faces.

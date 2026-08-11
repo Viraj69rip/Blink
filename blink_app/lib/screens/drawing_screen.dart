@@ -5,7 +5,6 @@ import '../providers/robot_state_provider.dart';
 import '../theme/blink_constants.dart';
 import '../theme/blink_theme.dart';
 import '../widgets/drawing_canvas.dart';
-import '../widgets/touch_gesture_detector.dart';
 import '../widgets/blink_components.dart';
 
 /// Drawing page — sketches are mapped to the robot's 128×64 OLED over BLE.
@@ -26,34 +25,18 @@ class _DrawingScreenState extends State<DrawingScreen> {
       (s) => s.connectionState == BleConnectionState.connected,
     );
 
-    return TouchGestureDetector(
-      enabled: connected,
-      onSingleTap: () {
-        // Single tap - selection (handled by canvas)
-      },
-      onDoubleTap: () {
-        // Double tap - show menu or exit draw mode
-        if (connected) {
-          context.read<RobotStateProvider>().exitDrawMode();
-        }
-      },
-      onTripleTap: () {
-        // Triple tap - back to command center
-        // Navigate to first tab (command center)
-        // This would require access to the parent navigator
-      },
-      onLongPress: () {
-        // Long press - home/reset to idle
-        context.read<RobotStateProvider>().exitDrawMode();
-      },
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(
-          BlinkConstants.paddingH,
-          MediaQuery.of(context).padding.top + 16,
-          BlinkConstants.paddingH,
-          120,
-        ),
-        child: Column(
+    // The canvas owns its gesture arena.  Wrapping it in a second tap detector
+    // made Flutter wait to resolve single/double/triple tap recognition before
+    // a freehand stroke could begin, which is particularly visible on a small
+    // OLED grid.  The physical robot implements its own tap gestures.
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        BlinkConstants.paddingH,
+        MediaQuery.of(context).padding.top + 16,
+        BlinkConstants.paddingH,
+        120,
+      ),
+      child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Draw', style: BlinkTypography.displayLarge),
@@ -116,7 +99,6 @@ class _DrawingScreenState extends State<DrawingScreen> {
               ],
             ),
           ],
-        ),
       ),
     );
   }

@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../services/ble_manager.dart';
@@ -10,237 +12,189 @@ import '../theme/blink_theme.dart';
 const int kOledWidth = 128;
 const int kOledHeight = 64;
 
-/// Minimum interval between BLE draw-line writes to avoid flooding.
-/// Reduced from 30ms to 8ms for ultra-low latency drawing (~125 Hz)
-const Duration _kBleThrottle = Duration(milliseconds: 8);
+/// Sending every pointer sample creates a long BLE backlog.  The preview is
+/// still updated for every sample, while the robot receives one continuous
+/// segment at this cadence (the newest point always wins).
+const Duration _kMinimumBleSegmentInterval = Duration(milliseconds: 20);
 
-/// A pixel-art drawing surface. Every visible white cell is an OLED pixel,
-/// and each emitted segment is the same integer line sent to the robot.
+/// A direct, pixel-accurate drawing surface for BLINK's 128 x 64 OLED.
+///
+/// The canvas deliberately listens to raw pointer events instead of using a
+/// drag recognizer.  Flutter's drag slop is useful for scroll views, but makes
+/// a pen feel late here.  A compact bitmap also avoids replaying every old
+/// stroke on each pointer update, which was the main source of local lag.
 class DrawingCanvas extends StatefulWidget {
-  const DrawingCanvas({super.key, this.ble, this.enabled = true});
+  const DrawingCanvas({
+    super.key,
+    this.ble,
+    this.enabled = true,
+    this.showGrid = false,
+  });
 
   final BleManager? ble;
   final bool enabled;
+
+  /// A faint 16 px guide can be useful while debugging artwork.  It is off by
+  /// default so the preview reads like a clean OLED instead of a field of dots.
+  final bool showGrid;
 
   @override
   State<DrawingCanvas> createState() => DrawingCanvasState();
 }
 
 class DrawingCanvasState extends State<DrawingCanvas> {
-  final List<_OledStroke> _strokes = <_OledStroke>[];
-  Offset? _lastOled;
-  Future<void> _sendQueue = Future<void>.value();
-  bool _drawModeSent = false;
+  final Uint8List _pixels = Uint8List(kOledWidth * kOledHeight);
+  final ValueNotifier<int> _bitmapRevision = ValueNotifier<int>(0);
 
-  // Throttle BLE writes to avoid flooding the stack.
-  DateTime? _lastBleEmitAt;
-  final List<_OledStroke> _pendingBleStrokes = [];
-  Timer? _throttleTimer;
+  Offset? _lastInputPoint;
+  Offset? _lastSentPoint;
+  Offset? _queuedRemotePoint;
+  int? _activePointer;
+
+  bool _drawModeRequested = false;
+  bool _writeInFlight = false;
+  bool _clearing = false;
+  DateTime? _lastBleWriteAt;
+  Timer? _sendTimer;
+  Future<void> _lastWrite = Future<void>.value();
 
   BleManager get _ble => widget.ble ?? BleManager.instance;
 
+  bool get isEmpty => !_pixels.any((pixel) => pixel != 0);
+
   Offset _toOled(Offset local, Size size) {
-    final x = (local.dx / size.width * (kOledWidth - 1)).round();
-    final y = (local.dy / size.height * (kOledHeight - 1)).round();
+    final safeWidth = size.width <= 0 ? 1.0 : size.width;
+    final safeHeight = size.height <= 0 ? 1.0 : size.height;
+    final x = (local.dx / safeWidth * (kOledWidth - 1)).round();
+    final y = (local.dy / safeHeight * (kOledHeight - 1)).round();
     return Offset(
       x.clamp(0, kOledWidth - 1).toDouble(),
       y.clamp(0, kOledHeight - 1).toDouble(),
     );
   }
 
+  bool _samePoint(Offset a, Offset b) =>
+      a.dx.toInt() == b.dx.toInt() && a.dy.toInt() == b.dy.toInt();
+
   void _ensureDrawMode() {
-    if (_drawModeSent) return;
-    _drawModeSent = true;
-    _ble.sendCommand('DRAW');
+    if (_drawModeRequested) return;
+    _drawModeRequested = true;
+    // Keep the UI responsive: waiting for a command response before showing
+    // the first pixel is noticeable. BLE preserves write order on the link.
+    unawaited(_ble.sendCommand('DRAW'));
   }
 
-  void _emitSegment(Offset from, Offset to) {
-    _sendQueue = _sendQueue.then((_) => _ble.sendDrawLine(
-          from.dx.toInt(),
-          from.dy.toInt(),
-          to.dx.toInt(),
-          to.dy.toInt(),
-        ));
-  }
+  void _onPointerDown(PointerDownEvent event, Size size) {
+    if (!widget.enabled || _clearing || _activePointer != null) return;
 
-  void _flushPendingStrokes() {
-    for (final stroke in _pendingBleStrokes) {
-      _emitSegment(stroke.from, stroke.to);
-    }
-    _pendingBleStrokes.clear();
-    _lastBleEmitAt = DateTime.now();
-  }
-
-  void _onPanStart(DragStartDetails details, Size size) {
-    if (!widget.enabled) return;
-    _lastOled = _toOled(details.localPosition, size);
+    _activePointer = event.pointer;
+    final point = _toOled(event.localPosition, size);
+    _lastInputPoint = point;
     _ensureDrawMode();
+
+    // A press without movement is a valid one-pixel mark.
+    _drawLocalLine(point, point);
+    _queueRemotePoint(point, immediate: true);
   }
 
-  void _onPanUpdate(DragUpdateDetails details, Size size) {
-    final from = _lastOled;
-    if (!widget.enabled || from == null) return;
-    final to = _toOled(details.localPosition, size);
-    if (to == from) return;
+  void _onPointerMove(PointerMoveEvent event, Size size) {
+    if (!widget.enabled || event.pointer != _activePointer || _clearing) {
+      return;
+    }
 
-    final stroke = _OledStroke(from: from, to: to);
+    final from = _lastInputPoint;
+    if (from == null) return;
+    final to = _toOled(event.localPosition, size);
+    if (_samePoint(from, to)) return;
 
-    // Always render locally for instant visual feedback.
-    setState(() {
-      _strokes.add(stroke);
-    });
+    _drawLocalLine(from, to);
+    _lastInputPoint = to;
+    _queueRemotePoint(to);
+  }
 
-    // Throttle BLE writes: send immediately if enough time has passed,
-    // otherwise buffer and schedule a flush.
+  void _onPointerEnd(int pointer) {
+    if (pointer != _activePointer) return;
+    final finalPoint = _lastInputPoint;
+    if (finalPoint != null) {
+      _queueRemotePoint(finalPoint, immediate: true);
+    }
+    _activePointer = null;
+    _lastInputPoint = null;
+  }
+
+  void _queueRemotePoint(Offset point, {bool immediate = false}) {
+    if (_clearing) return;
+    _queuedRemotePoint = point;
+    if (_writeInFlight) return;
+
     final now = DateTime.now();
-    final canSendNow = _lastBleEmitAt == null ||
-        now.difference(_lastBleEmitAt!) >= _kBleThrottle;
-
-    if (canSendNow) {
-      _throttleTimer?.cancel();
-      _pendingBleStrokes.add(stroke);
-      _flushPendingStrokes();
-    } else {
-      _pendingBleStrokes.add(stroke);
-      _throttleTimer ??= Timer(_kBleThrottle, () {
-        _throttleTimer = null;
-        _flushPendingStrokes();
-      });
+    final lastWrite = _lastBleWriteAt;
+    final elapsed = lastWrite == null ? null : now.difference(lastWrite);
+    if (immediate ||
+        elapsed == null ||
+        elapsed >= _kMinimumBleSegmentInterval) {
+      _sendTimer?.cancel();
+      _sendTimer = null;
+      unawaited(_flushLatestRemotePoint());
+      return;
     }
 
-    _lastOled = to;
-  }
-
-  void _onPanEnd(DragEndDetails _) {
-    // Flush any remaining buffered strokes.
-    _throttleTimer?.cancel();
-    _throttleTimer = null;
-    if (_pendingBleStrokes.isNotEmpty) {
-      _flushPendingStrokes();
-    }
-    _lastOled = null;
-  }
-
-  Future<void> clearAll() async {
-    _throttleTimer?.cancel();
-    _throttleTimer = null;
-    _pendingBleStrokes.clear();
-    setState(() {
-      _strokes.clear();
-      _lastOled = null;
-      _drawModeSent = false;
+    _sendTimer ??= Timer(_kMinimumBleSegmentInterval - elapsed, () {
+      _sendTimer = null;
+      unawaited(_flushLatestRemotePoint());
     });
-    await _ble.sendCommand('CLEAR');
   }
 
-  @override
-  void dispose() {
-    _throttleTimer?.cancel();
-    super.dispose();
-  }
+  Future<void> _flushLatestRemotePoint() async {
+    if (_writeInFlight || _clearing) return;
+    final target = _queuedRemotePoint;
+    if (target == null) return;
+    _queuedRemotePoint = null;
 
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final size = Size(constraints.maxWidth, constraints.maxHeight);
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onPanStart: (details) => _onPanStart(details, size),
-          onPanUpdate: (details) => _onPanUpdate(details, size),
-          onPanEnd: _onPanEnd,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.black,
-              borderRadius:
-                  BorderRadius.circular(BlinkConstants.borderRadiusSmall),
-              border: Border.all(color: BlinkColors.cardBorder),
-            ),
-            child: ClipRRect(
-              borderRadius:
-                  BorderRadius.circular(BlinkConstants.borderRadiusSmall),
-              child: CustomPaint(
-                painter:
-                    _PixelGridPainter(strokes: List<_OledStroke>.of(_strokes)),
-                size: size,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-      },
+    final from = _lastSentPoint ?? target;
+    if (_lastSentPoint != null && _samePoint(from, target)) return;
+
+    _writeInFlight = true;
+    _lastSentPoint = target;
+    _lastBleWriteAt = DateTime.now();
+
+    final write = _ble.sendDrawLine(
+      from.dx.toInt(),
+      from.dy.toInt(),
+      target.dx.toInt(),
+      target.dy.toInt(),
     );
-  }
-}
-
-class _OledStroke {
-  const _OledStroke({required this.from, required this.to});
-  final Offset from;
-  final Offset to;
-}
-
-class _PixelGridPainter extends CustomPainter {
-  const _PixelGridPainter({required this.strokes});
-
-  final List<_OledStroke> strokes;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cellW = size.width / kOledWidth;
-    final cellH = size.height / kOledHeight;
-    final majorGrid = Paint()
-      ..color = Colors.white.withValues(alpha: 0.09)
-      ..strokeWidth = 1;
-
-    // Major cells make the actual 128x64 coordinate system readable without
-    // drawing the old dotted background.
-    for (var x = 0; x <= kOledWidth; x += 8) {
-      canvas.drawLine(
-          Offset(x * cellW, 0), Offset(x * cellW, size.height), majorGrid);
-    }
-    for (var y = 0; y <= kOledHeight; y += 8) {
-      canvas.drawLine(
-          Offset(0, y * cellH), Offset(size.width, y * cellH), majorGrid);
-    }
-
-    final pixel = Paint()..color = Colors.white;
-    final drawn = <int>{};
-    for (final stroke in strokes) {
-      _drawOledLine(
-        stroke.from.dx.toInt(),
-        stroke.from.dy.toInt(),
-        stroke.to.dx.toInt(),
-        stroke.to.dy.toInt(),
-        (x, y) {
-          final key = y * kOledWidth + x;
-          if (!drawn.add(key)) return;
-          // Small overlap avoids visual gaps on fractional pixel sizes.
-          canvas.drawRect(
-            Rect.fromLTWH(x * cellW, y * cellH, cellW + 0.35, cellH + 0.35),
-            pixel,
-          );
-        },
-      );
+    _lastWrite = write;
+    try {
+      await write;
+    } finally {
+      _writeInFlight = false;
+      if (mounted && !_clearing && _queuedRemotePoint != null) {
+        _queueRemotePoint(_queuedRemotePoint!);
+      }
     }
   }
 
-  void _drawOledLine(
-    int x0,
-    int y0,
-    int x1,
-    int y1,
-    void Function(int x, int y) drawPixel,
-  ) {
+  void _drawLocalLine(Offset from, Offset to) {
+    var x0 = from.dx.toInt();
+    var y0 = from.dy.toInt();
+    final x1 = to.dx.toInt();
+    final y1 = to.dy.toInt();
     final dx = (x1 - x0).abs();
     final sx = x0 < x1 ? 1 : -1;
     final dy = -(y1 - y0).abs();
     final sy = y0 < y1 ? 1 : -1;
     var error = dx + dy;
+    var changed = false;
 
     while (true) {
-      drawPixel(x0, y0);
-      if (x0 == x1 && y0 == y1) return;
-      final twiceError = 2 * error;
+      final index = y0 * kOledWidth + x0;
+      if (_pixels[index] == 0) {
+        _pixels[index] = 1;
+        changed = true;
+      }
+      if (x0 == x1 && y0 == y1) break;
+      final twiceError = error * 2;
       if (twiceError >= dy) {
         error += dy;
         x0 += sx;
@@ -250,9 +204,191 @@ class _PixelGridPainter extends CustomPainter {
         y0 += sy;
       }
     }
+
+    if (changed) _bitmapRevision.value++;
+  }
+
+  /// Clears the immediate app preview and the matching robot canvas.
+  Future<void> clearAll() async {
+    _clearing = true;
+    _sendTimer?.cancel();
+    _sendTimer = null;
+    _queuedRemotePoint = null;
+    _activePointer = null;
+    _lastInputPoint = null;
+    _lastSentPoint = null;
+
+    _pixels.fillRange(0, _pixels.length, 0);
+    _bitmapRevision.value++;
+
+    // Preserve BLE ordering: an in-flight segment must finish before CLEAR.
+    // This prevents a stale late segment from reappearing after a clear.
+    try {
+      await _lastWrite;
+    } catch (_) {
+      // BleManager already handles characteristic write failures. Clearing the
+      // local preview should remain deterministic even if the link drops.
+    }
+    await _ble.sendCommand('CLEAR');
+    _lastBleWriteAt = null;
+    _drawModeRequested = false;
+    _clearing = false;
   }
 
   @override
-  bool shouldRepaint(covariant _PixelGridPainter oldDelegate) =>
-      oldDelegate.strokes != strokes;
+  void didUpdateWidget(covariant DrawingCanvas oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.enabled && !widget.enabled) {
+      _sendTimer?.cancel();
+      _sendTimer = null;
+      _queuedRemotePoint = null;
+      _activePointer = null;
+      _lastInputPoint = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _sendTimer?.cancel();
+    _bitmapRevision.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RepaintBoundary(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final size = Size(
+            constraints.maxWidth.isFinite ? constraints.maxWidth : 1,
+            constraints.maxHeight.isFinite ? constraints.maxHeight : 1,
+          );
+
+          return Semantics(
+            label: '128 by 64 pixel OLED drawing canvas',
+            hint: widget.enabled
+                ? 'Draw with one finger or a stylus. Every mark is sent to BLINK.'
+                : 'Connect to BLINK to enable drawing.',
+            child: MouseRegion(
+              cursor: widget.enabled
+                  ? SystemMouseCursors.precise
+                  : SystemMouseCursors.forbidden,
+              child: Listener(
+                behavior: HitTestBehavior.opaque,
+                onPointerDown: (event) => _onPointerDown(event, size),
+                onPointerMove: (event) => _onPointerMove(event, size),
+                onPointerUp: (event) => _onPointerEnd(event.pointer),
+                onPointerCancel: (event) => _onPointerEnd(event.pointer),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black,
+                    borderRadius: BorderRadius.circular(
+                      BlinkConstants.borderRadiusSmall,
+                    ),
+                    border: Border.all(
+                      color: widget.enabled
+                          ? BlinkColors.cardBorder
+                          : BlinkColors.cardBorder.withValues(alpha: 0.45),
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(
+                      BlinkConstants.borderRadiusSmall,
+                    ),
+                    child: CustomPaint(
+                      painter: _OledBitmapPainter(
+                        pixels: _pixels,
+                        revision: _bitmapRevision,
+                        showGrid: widget.showGrid,
+                      ),
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _OledBitmapPainter extends CustomPainter {
+  _OledBitmapPainter({
+    required this.pixels,
+    required this.revision,
+    required this.showGrid,
+  }) : super(repaint: revision);
+
+  final Uint8List pixels;
+  final ValueListenable<int> revision;
+  final bool showGrid;
+
+  int _paintedRevision = -1;
+  Path? _pixelPath;
+
+  Path _pixelsAsPath() {
+    final currentRevision = revision.value;
+    if (_pixelPath != null && _paintedRevision == currentRevision) {
+      return _pixelPath!;
+    }
+
+    final path = Path();
+    for (var y = 0; y < kOledHeight; y++) {
+      final rowOffset = y * kOledWidth;
+      for (var x = 0; x < kOledWidth; x++) {
+        if (pixels[rowOffset + x] != 0) {
+          // The fractional overlap removes hairline gaps caused by the device
+          // pixel ratio while retaining a faithful OLED-pixel silhouette.
+          path.addRect(Rect.fromLTWH(x.toDouble(), y.toDouble(), 1.02, 1.02));
+        }
+      }
+    }
+    _paintedRevision = currentRevision;
+    _pixelPath = path;
+    return path;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final cellWidth = size.width / kOledWidth;
+    final cellHeight = size.height / kOledHeight;
+
+    if (showGrid) {
+      final guide = Paint()
+        ..color = Colors.white.withValues(alpha: 0.055)
+        ..strokeWidth = 1;
+      for (var x = 0; x <= kOledWidth; x += 16) {
+        canvas.drawLine(
+          Offset(x * cellWidth, 0),
+          Offset(x * cellWidth, size.height),
+          guide,
+        );
+      }
+      for (var y = 0; y <= kOledHeight; y += 16) {
+        canvas.drawLine(
+          Offset(0, y * cellHeight),
+          Offset(size.width, y * cellHeight),
+          guide,
+        );
+      }
+    }
+
+    canvas.save();
+    canvas.scale(cellWidth, cellHeight);
+    canvas.drawPath(
+      _pixelsAsPath(),
+      Paint()
+        ..color = BlinkColors.textPrimary
+        ..style = PaintingStyle.fill
+        ..isAntiAlias = false,
+    );
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _OledBitmapPainter oldDelegate) =>
+      oldDelegate.showGrid != showGrid || oldDelegate.pixels != pixels;
 }

@@ -1,0 +1,24 @@
+
+Support for Android x86 targets will be removed in the next stable release after 3.27. See https://github.com/flutter/flutter/issues/157543 for details.
+Running Gradle task 'assembleDebug'...                          
+startup failed:
+/opt/hostedtoolcache/flutter/stable-3.27.4-x64/flutter/packages/flutter_tools/gradle/src/main/groovy/flutter.groovy: 523: unable to resolve class XmlParser
+ @ line 523, column 40.
+                           def manifest = new XmlParser().parse(processResources.manifestFile)
+                                          ^
+
+1 error
+
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':gradle:compileGroovy'.
+> Compilation failed; see the compiler error output for details.
+
+* Try:
+> Run with --scan to generate a Build Scan (Powered by Develocity).
+
+BUILD FAILED in 42s
+Running Gradle task 'assembleDebug'...                             43.4s
+Gradle task assembleDebug failed with exit code 1

@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -92,7 +93,14 @@ jobs:
       # that catches real breakage.
       - name: Build debug APK
         working-directory: blink_app
-        run: flutter build apk --debug
+        run: |
+          flutter build apk --debug > build_log.txt 2>&1 || (
+            echo "Build failed. Creating issue with log..."
+            gh issue create --title "CI Build Failure Log" --body "$(tail -n 100 build_log.txt)"
+            exit 1
+          )
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   website:
     name: Website builds

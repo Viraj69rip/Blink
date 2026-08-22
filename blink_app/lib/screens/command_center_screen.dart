@@ -563,10 +563,10 @@ class _BentoGrid extends StatelessWidget {
             const SizedBox(width: BlinkConstants.gridGap),
 
             // Card B — Firmware Update (check for new releases)
-            Expanded(
+            const Expanded(
               child: SizedBox(
                 height: 160,
-                child: const _FirmwareCard(),
+                child: _FirmwareCard(),
               ),
             ),
           ],

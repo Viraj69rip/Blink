@@ -1,0 +1,117 @@
+# The build gate. Nothing here publishes anything — it exists so a change that
+# does not compile is caught on push instead of at release time, which is the
+# only place the firmware, the app, and the site are ever built together.
+#
+# Deliberately unsigned: the debug APK needs no keystore secrets, so this runs
+# on forks and pull requests too.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    name: Firmware compiles (ESP32-C3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      # Core version matches release.yml. Keep the two in step: a core bump that
+      # only lands in one of them turns a green CI into a red release.
+      - name: Install ESP32 core and libraries
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.11
+          arduino-cli lib install U8g2 NimBLE-Arduino "Adafruit MPU6050" "Adafruit Unified Sensor" "Adafruit BusIO"
+
+      - name: Record resolved library versions
+        run: arduino-cli lib list
+
+      # --warnings all, because the firmware drives hardware from interrupt-ish
+      # timing code where an implicit narrowing conversion is a real bug.
+      - name: Compile
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32c3 \
+            --warnings all \
+            firmware/BLINK_Robot
+
+  app:
+    name: App analyzes and builds (Android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: blink_app
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: blink_app
+        run: flutter analyze
+
+      - name: Unit and widget tests
+        working-directory: blink_app
+        run: flutter test
+
+      # Debug, not release: no keystore secrets, so this also runs on forks.
+      # It still exercises the full Dart-to-Dalvik compile, which is the part
+      # that catches real breakage.
+      - name: Build debug APK
+        working-directory: blink_app
+        run: flutter build apk --debug
+
+  website:
+    name: Website builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install
+        working-directory: website
+        run: npm ci
+
+      - name: Build
+        working-directory: website
+        run: npm run build
+
+      # The published site is the committed `docs/` directory (Pages is set to
+      # "deploy from branch /docs"), so a build that succeeds but was never
+      # committed silently leaves the live site on an older bundle.
+      - name: Check the committed docs/ output is current
+        run: |
+          if ! git diff --quiet -- docs; then
+            echo "::warning::docs/ is out of date with website/ — the deploy-pages workflow will refresh it on push to main."
+            git diff --stat -- docs
+          else
+            echo "docs/ matches a fresh build."
+          fi

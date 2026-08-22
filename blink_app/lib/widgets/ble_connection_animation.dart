@@ -3,8 +3,8 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
-import '../theme/blink_constants.dart';
 import '../theme/blink_theme.dart';
+import '../utils/text_painter_cache.dart';
 
 /// States shown by the BLINK pairing OLED simulation.
 enum BleConnectionAnimState {
@@ -15,9 +15,67 @@ enum BleConnectionAnimState {
   failed,
 }
 
-/// The pairing animation uses the same 128 x 64 "app mode" composition as
-/// the OLED simulator on the BLINK website: wordmark, status, five signal
-/// bars and a soft orbiting status light.
+// ── Spec constants, ported from website/src/components/Demo.jsx `drawApp` ────
+//
+// The website draws into a 256 x 128 canvas using fractions of w/h, so every
+// value below is that same fraction resolved against the real OLED's 128 x 64.
+// Fractions are resolution-independent, which is why the numbers transfer
+// exactly rather than approximately.
+
+/// Seamless loop length for the App Mode scene.
+///
+/// `drawApp` animates on `sin(t*3)`, `cos(t*1.5)` and `sin(t*1.8)`. The shortest
+/// `t` making all three complete a whole number of turns is `2π * 10/3`, so the
+/// scene repeats exactly every 20.944 s. Driving the controller at any other
+/// duration either runs the scene at the wrong speed (the old code looped in
+/// 1.5–2.2 s) or visibly jumps at the wrap.
+const double _kLoopSeconds = 20.9439510239; // 2 * pi * 10 / 3
+const Duration _kLoopDuration = Duration(milliseconds: 20944);
+
+/// Any periodic frequency used here must be a multiple of 0.3 rad/s, otherwise
+/// it will not close over [_kLoopSeconds] and the loop will visibly tick.
+const double _kBarFreq = 3.0; // spec
+const double _kDotFreqX = 1.5; // spec
+const double _kDotFreqY = 1.8; // spec
+const double _kSparkleOrbitFreq = 0.6;
+const double _kSparkleBreathFreq = 1.5;
+const double _kPulseFreq = 1.5;
+
+/// Horizontal centre of the display, `w * 0.5`. The website centres the
+/// wordmark, status line and dot orbit on it.
+const double _kCenterX = 64.0;
+
+// Wordmark: bold (h * 0.16)px monospace, #818cf8, baseline at h * 0.22.
+const double _kWordmarkSize = 10.24;
+const double _kWordmarkBaseline = 14.08;
+
+// Status line: (h * 0.08)px monospace, white @ 0.5, baseline at h * 0.34.
+const double _kStatusSize = 5.12;
+const double _kStatusBaseline = 21.76;
+
+// Signal bars: 5 bars, x = w*0.25 + i*(w*0.1), width w*0.05, base at h*0.72,
+// height h*0.3*((i+1)/5) wobbling by h*0.04.
+const int _kBarCount = 5;
+const double _kBarStartX = 32.0;
+const double _kBarPitch = 12.8;
+const double _kBarWidth = 6.4;
+const double _kBarBaseY = 46.08;
+const double _kBarStep = 3.84;
+const double _kBarWobble = 2.56;
+
+// Status dot: orbits w*0.08 / h*0.06 around the display centre. Core is
+// #6366f1 at r = w*0.025 under an 8px glow; halo is white @ 0.08 at r = w*0.055.
+const double _kDotCenterX = _kCenterX;
+const double _kDotCenterY = 32.0;
+const double _kDotOrbitX = 10.24;
+const double _kDotOrbitY = 3.84;
+const double _kDotCoreRadius = 3.2;
+const double _kDotHaloRadius = 7.04;
+const double _kDotGlowBlur = 4.0; // canvas shadowBlur 8, halved to OLED units
+
+/// The pairing animation reproduces the "App Mode" composition from the OLED
+/// simulator on the BLINK website: indigo wordmark, status line, five signal
+/// bars and a softly orbiting status light.
 ///
 /// [size] is the outer width. The widget maintains the OLED's 2:1 ratio rather
 /// than stretching the animation into a square.
@@ -39,47 +97,38 @@ class BleConnectionAnimation extends StatefulWidget {
 }
 
 class _BleConnectionAnimationState extends State<BleConnectionAnimation>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
+    with TickerProviderStateMixin {
+  /// Scene clock. Runs continuously at the spec rate and is never restarted by
+  /// a state change — the composition is the same scene throughout, so
+  /// re-seeding it would make the bars and dot jump on every transition.
+  late final AnimationController _timebase;
+
+  /// One-shot entrance, restarted whenever the state changes. Drives the
+  /// reveal and wordmark fade so those play once instead of every 20.9 s.
+  late final AnimationController _entry;
+
   Timer? _completionTimer;
   bool _completionSent = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
+    _timebase = AnimationController(vsync: this, duration: _kLoopDuration)
+      ..repeat();
+    _entry = AnimationController(
       vsync: this,
-      duration: _durationFor(widget.state),
+      duration: const Duration(milliseconds: 620),
     );
     _playFor(widget.state);
   }
 
-  Duration _durationFor(BleConnectionAnimState state) => switch (state) {
-        BleConnectionAnimState.scanning => const Duration(milliseconds: 1500),
-        BleConnectionAnimState.connecting => const Duration(milliseconds: 1750),
-        BleConnectionAnimState.connected => const Duration(milliseconds: 2200),
-        BleConnectionAnimState.failed => const Duration(milliseconds: 1300),
-        BleConnectionAnimState.idle => const Duration(milliseconds: 1800),
-      };
-
   void _playFor(BleConnectionAnimState state) {
     _completionTimer?.cancel();
     _completionSent = false;
-    _controller
+    _entry
       ..stop()
-      ..duration = _durationFor(state)
-      ..value = 0;
-
-    switch (state) {
-      case BleConnectionAnimState.idle:
-        break;
-      case BleConnectionAnimState.failed:
-        _controller.repeat(reverse: true);
-      case BleConnectionAnimState.scanning:
-      case BleConnectionAnimState.connecting:
-      case BleConnectionAnimState.connected:
-        _controller.repeat();
-    }
+      ..value = 0
+      ..forward();
 
     if (state == BleConnectionAnimState.connected && widget.onComplete != null) {
       // Let the successful connection read clearly before the overlay exits.
@@ -102,14 +151,15 @@ class _BleConnectionAnimationState extends State<BleConnectionAnimation>
   @override
   void dispose() {
     _completionTimer?.cancel();
-    _controller.dispose();
+    _timebase.dispose();
+    _entry.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final disableAnimations = MediaQuery.maybeOf(context)?.disableAnimations ??
-        false;
+    final disableAnimations =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
     final outerWidth = widget.size.clamp(160.0, 520.0);
     final inset = (outerWidth * 0.045).clamp(8.0, 16.0);
 
@@ -143,11 +193,16 @@ class _BleConnectionAnimationState extends State<BleConnectionAnimation>
                 child: AspectRatio(
                   aspectRatio: 2,
                   child: AnimatedBuilder(
-                    animation: _controller,
+                    animation: Listenable.merge([_timebase, _entry]),
                     builder: (context, _) => CustomPaint(
                       painter: _BleOledPainter(
                         state: widget.state,
-                        phase: disableAnimations ? 0.32 : _controller.value,
+                        // Seconds since the loop started, matching the
+                        // website's `t = (ts - start) / 1000`.
+                        t: disableAnimations
+                            ? _kLoopSeconds * 0.32
+                            : _timebase.value * _kLoopSeconds,
+                        entry: disableAnimations ? 1.0 : _entry.value,
                       ),
                     ),
                   ),
@@ -168,27 +223,37 @@ class _ConnectionStatus {
   final Color color;
 }
 
+/// [color] tints the bars, dot and status text. The website scene is indigo
+/// throughout; only a failed pair departs from it.
 _ConnectionStatus _statusFor(BleConnectionAnimState state) => switch (state) {
       BleConnectionAnimState.idle =>
-        const _ConnectionStatus('READY', BlinkColors.textTertiary),
+        const _ConnectionStatus('READY', BlinkColors.pairIndigo),
       BleConnectionAnimState.scanning =>
-        const _ConnectionStatus('SCANNING', BlinkColors.oledAccent),
+        const _ConnectionStatus('SCANNING', BlinkColors.pairIndigo),
       BleConnectionAnimState.connecting =>
-        const _ConnectionStatus('CONNECTING', BlinkColors.oledAccent),
+        const _ConnectionStatus('CONNECTING', BlinkColors.pairIndigo),
       BleConnectionAnimState.connected =>
-        const _ConnectionStatus('CONNECTED', BlinkColors.oledAccent),
+        const _ConnectionStatus('CONNECTED', BlinkColors.pairIndigo),
       BleConnectionAnimState.failed =>
         const _ConnectionStatus('NOT FOUND', BlinkColors.danger),
     };
 
+/// Laying out a [TextPainter] every frame for two short, rarely-changing
+/// strings is pure waste. See [cachedTextPainter] for the caching rules.
 class _BleOledPainter extends CustomPainter {
   const _BleOledPainter({
     required this.state,
-    required this.phase,
+    required this.t,
+    required this.entry,
   });
 
   final BleConnectionAnimState state;
-  final double phase;
+
+  /// Scene time in seconds, 0 .. [_kLoopSeconds].
+  final double t;
+
+  /// One-shot entrance progress for the current state, 0 .. 1.
+  final double entry;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -203,108 +268,98 @@ class _BleOledPainter extends CustomPainter {
 
   void _paintOled(Canvas canvas) {
     final status = _statusFor(state);
-    final t = phase * 2 * pi;
     final isConnected = state == BleConnectionAnimState.connected;
     final isConnecting = state == BleConnectionAnimState.connecting;
     final isScanning = state == BleConnectionAnimState.scanning;
     final isFailed = state == BleConnectionAnimState.failed;
 
+    // Connecting is the only state that grows the bars in from nothing; every
+    // other state shows the settled scene immediately.
     final reveal = isConnecting
-        ? Curves.easeOutCubic.transform((phase * 2.25).clamp(0.0, 1.0))
+        ? Curves.easeOutCubic.transform(entry.clamp(0.0, 1.0))
         : 1.0;
     final wordmarkAlpha = isConnecting
-        ? Curves.easeOut.transform((phase * 3.3).clamp(0.0, 1.0))
+        ? Curves.easeOut.transform((entry * 1.6).clamp(0.0, 1.0))
         : 1.0;
 
     _paintCenteredText(
       canvas,
       'BLINK',
-      top: 7,
+      baseline: _kWordmarkBaseline,
       style: TextStyle(
-        color: BlinkColors.textPrimary.withValues(alpha: wordmarkAlpha),
+        color: BlinkColors.pairIndigo.withValues(alpha: wordmarkAlpha),
         fontFamily: 'monospace',
         fontWeight: FontWeight.w700,
-        fontSize: 11.5,
-        letterSpacing: 2.35,
+        fontSize: _kWordmarkSize,
       ),
     );
     _paintCenteredText(
       canvas,
       status.label,
-      top: 21,
+      baseline: _kStatusBaseline,
       style: TextStyle(
-        color: status.color.withValues(alpha: isFailed ? 0.85 : 0.72),
+        color: isFailed
+            ? BlinkColors.danger.withValues(alpha: 0.85)
+            : BlinkColors.textPrimary.withValues(alpha: 0.5),
         fontFamily: 'monospace',
-        fontWeight: FontWeight.w600,
-        fontSize: 5.5,
-        letterSpacing: 1.25,
+        fontSize: _kStatusSize,
       ),
     );
 
     _paintSignalBars(
       canvas,
-      t: t,
       reveal: reveal,
       color: status.color,
       animate: !isFailed,
-      intensity: isScanning ? 1.5 : (isConnected ? 0.62 : 1.0),
       failed: isFailed,
     );
 
-    final center = Offset(64, 35);
-    final orbitX = center.dx + cos(t * (isScanning ? 1.35 : 0.75)) * 10;
-    final orbitY = center.dy + sin(t * (isScanning ? 1.65 : 0.9)) * 3.8;
+    const center = Offset(_kDotCenterX, _kDotCenterY);
     final dot = isFailed
-        ? Offset(64, 35)
-        : Offset(orbitX, orbitY);
-    final breath = 0.5 + 0.5 * sin(t * (isScanning ? 2.4 : 1.5));
+        ? center
+        : Offset(
+            _kDotCenterX + cos(t * _kDotFreqX) * _kDotOrbitX,
+            _kDotCenterY + sin(t * _kDotFreqY) * _kDotOrbitY,
+          );
     _paintStatusDot(
       canvas,
       center: dot,
-      color: status.color,
-      intensity: isFailed ? 0.35 : (0.65 + breath * 0.35),
+      color: isFailed ? BlinkColors.danger : BlinkColors.pairIndigoDeep,
+      intensity: isFailed ? 0.45 : 1.0,
     );
 
     if (isScanning || isConnecting) {
-      _paintSearchingRings(
-        canvas,
-        center: center,
-        color: status.color,
-        phase: phase,
-      );
+      _paintSearchingRings(canvas, center: center, color: status.color);
     }
     if (isConnected) {
-      _paintConnectedSparkles(canvas, t: t, color: status.color);
+      _paintConnectedSparkles(canvas, color: status.color);
     }
     if (isFailed) {
-      _paintRetryMark(canvas, color: status.color, phase: phase);
+      _paintRetryMark(canvas, color: status.color);
     }
   }
 
   void _paintSignalBars(
     Canvas canvas, {
-    required double t,
     required double reveal,
     required Color color,
     required bool animate,
-    required double intensity,
     required bool failed,
   }) {
-    const barWidth = 6.0;
-    const gap = 7.0;
-    const baseY = 51.0;
-    const startX = 34.0;
-    for (var index = 0; index < 5; index++) {
-      final baseHeight = 4 + index * 3.8;
-      final wobble = animate ? sin(t * 2.7 + index * 1.2) * intensity : 0.0;
-      final height = max(2.0, (baseHeight + wobble) * reveal);
+    for (var index = 0; index < _kBarCount; index++) {
+      final baseHeight = _kBarStep * (index + 1);
+      final wobble =
+          animate ? sin(t * _kBarFreq + index * 1.2) * _kBarWobble : 0.0;
+      final height = max(0.0, (baseHeight + wobble) * reveal);
+      if (height <= 0) continue;
       final rect = Rect.fromLTWH(
-        startX + index * (barWidth + gap),
-        baseY - height,
-        barWidth,
+        _kBarStartX + index * _kBarPitch,
+        _kBarBaseY - height,
+        _kBarWidth,
         height,
       );
       if (failed && index > 1) {
+        // Out of range: the tall bars are drawn as empty outlines.
         canvas.drawRect(
           rect,
           Paint()
@@ -316,7 +371,9 @@ class _BleOledPainter extends CustomPainter {
         canvas.drawRect(
           rect,
           Paint()
-            ..color = color.withValues(alpha: 0.38 + index * 0.11),
+            ..color = color.withValues(
+              alpha: 0.4 + (index / _kBarCount) * 0.6,
+            ),
         );
       }
     }
@@ -328,29 +385,38 @@ class _BleOledPainter extends CustomPainter {
     required Color color,
     required double intensity,
   }) {
-    for (final ring in <double>[7.0, 4.8]) {
-      canvas.drawCircle(
-        center,
-        ring,
-        Paint()..color = color.withValues(alpha: 0.035 * intensity),
-      );
-    }
+    // Stands in for the website's `shadowBlur = 8` on the core.
     canvas.drawCircle(
       center,
-      2.45,
-      Paint()..color = color.withValues(alpha: 0.28 * intensity),
+      _kDotCoreRadius,
+      Paint()
+        ..color = color.withValues(alpha: 0.55 * intensity)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, _kDotGlowBlur),
     );
-    canvas.drawCircle(center, 1.3, Paint()..color = color);
+    canvas.drawCircle(
+      center,
+      _kDotCoreRadius,
+      Paint()..color = color.withValues(alpha: intensity),
+    );
+    // Drawn last, exactly as in the source: a wide, very faint white lift.
+    canvas.drawCircle(
+      center,
+      _kDotHaloRadius,
+      Paint()
+        ..color = BlinkColors.textPrimary.withValues(alpha: 0.08 * intensity),
+    );
   }
 
   void _paintSearchingRings(
     Canvas canvas, {
     required Offset center,
     required Color color,
-    required double phase,
   }) {
+    // 13 ring cycles per scene loop divides [_kLoopSeconds] evenly, so the
+    // rings do not jump when the timebase wraps.
+    final ringPhase = (t / (_kLoopSeconds / 13)) % 1.0;
     for (var index = 0; index < 2; index++) {
-      final p = (phase + index * 0.48) % 1.0;
+      final p = (ringPhase + index * 0.48) % 1.0;
       canvas.drawCircle(
         center,
         6 + p * 15,
@@ -362,17 +428,14 @@ class _BleOledPainter extends CustomPainter {
     }
   }
 
-  void _paintConnectedSparkles(
-    Canvas canvas, {
-    required double t,
-    required Color color,
-  }) {
+  void _paintConnectedSparkles(Canvas canvas, {required Color color}) {
     for (var index = 0; index < 5; index++) {
-      final angle = t * 0.45 + index * (2 * pi / 5);
-      final distance = 15 + sin(t * 1.6 + index) * 2.5;
+      final angle = t * _kSparkleOrbitFreq + index * (2 * pi / 5);
+      final distance =
+          15 + sin(t * _kSparkleBreathFreq + index) * 2.5;
       final center = Offset(
-        64 + cos(angle) * distance,
-        35 + sin(angle) * distance * 0.42,
+        _kDotCenterX + cos(angle) * distance,
+        _kDotCenterY + sin(angle) * distance * 0.42,
       );
       canvas.drawCircle(
         center,
@@ -382,35 +445,39 @@ class _BleOledPainter extends CustomPainter {
     }
   }
 
-  void _paintRetryMark(Canvas canvas,
-      {required Color color, required double phase}) {
-    final alpha = 0.45 + phase * 0.35;
+  void _paintRetryMark(Canvas canvas, {required Color color}) {
+    final pulse = 0.5 + 0.5 * sin(t * _kPulseFreq);
     final paint = Paint()
-      ..color = color.withValues(alpha: alpha)
+      ..color = color.withValues(alpha: 0.45 + pulse * 0.35)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2
       ..strokeCap = StrokeCap.round;
-    canvas.drawLine(const Offset(61, 32), const Offset(67, 38), paint);
-    canvas.drawLine(const Offset(67, 32), const Offset(61, 38), paint);
+    canvas.drawLine(const Offset(61, 29), const Offset(67, 35), paint);
+    canvas.drawLine(const Offset(67, 29), const Offset(61, 35), paint);
   }
 
   void _paintCenteredText(
     Canvas canvas,
     String text, {
-    required double top,
+    required double baseline,
     required TextStyle style,
   }) {
-    final painter = TextPainter(
-      text: TextSpan(text: text, style: style),
-      textDirection: TextDirection.ltr,
-      textScaler: TextScaler.noScaling,
-    )..layout();
-    painter.paint(canvas, Offset(64 - painter.width / 2, top));
+    final painter = cachedTextPainter(text, style);
+    // Canvas `fillText` puts the alphabetic baseline at y and centres on x;
+    // TextPainter paints from the top-left, so lift it by the ascent.
+    final ascent =
+        painter.computeDistanceToActualBaseline(TextBaseline.alphabetic);
+    painter.paint(
+      canvas,
+      Offset(_kCenterX - painter.width / 2, baseline - ascent),
+    );
   }
 
   @override
   bool shouldRepaint(covariant _BleOledPainter oldDelegate) =>
-      oldDelegate.state != state || oldDelegate.phase != phase;
+      oldDelegate.state != state ||
+      oldDelegate.t != t ||
+      oldDelegate.entry != entry;
 }
 
 /// Full-screen pairing feedback. It hides itself after a successful pairing so

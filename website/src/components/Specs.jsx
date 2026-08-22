@@ -1,13 +1,16 @@
 import { motion } from 'framer-motion'
 
+// Kept in step with firmware/BLINK_Robot/BLINK_Robot.ino — the pin map at the
+// top of that file and the U8g2 constructor are the source of truth here.
 const specs = [
   { label: 'Microcontroller', value: 'ESP32-C3', detail: 'RISC-V single-core @ 160 MHz' },
-  { label: 'Display', value: '0.96" OLED', detail: '128x64 px, SSD1306, I2C' },
-  { label: 'Motion Sensor', value: 'MPU6050', detail: '3-axis accel + 3-axis gyro' },
-  { label: 'Connectivity', value: 'Wi-Fi + BLE 5', detail: 'NimBLE stack, MQTT/HTTP' },
-  { label: 'Power', value: 'USB-C / 5V', detail: 'Optional Li-Po charging' },
-  { label: 'Firmware', value: 'Arduino / ESP-IDF', detail: 'State-machine animations' },
-  { label: 'Touch', value: 'Capacitive', detail: 'GPIO 4, tap/hold gestures' },
+  { label: 'Display', value: '0.96" OLED', detail: '128x64 px, SSD1306, I2C on GPIO 8/9' },
+  { label: 'Motion Sensor', value: 'MPU6050', detail: '3-axis accel + 3-axis gyro, shake & tilt' },
+  { label: 'Connectivity', value: 'BLE 5 (NimBLE)', detail: 'Custom GATT service, ~10 Hz state sync' },
+  { label: 'Updates', value: 'OTA over BLE', detail: 'Flash new firmware from the app' },
+  { label: 'Power', value: 'USB-C / 3.7V LiPo', detail: 'Battery level via ADC on GPIO 2' },
+  { label: 'Firmware', value: 'Arduino (C++)', detail: 'State-machine animations, 21 idle moods' },
+  { label: 'Touch', value: 'Capacitive', detail: 'GPIO 4, tap / hold-to-scroll / long-press' },
   { label: 'Audio', value: 'Piezo Buzzer', detail: 'GPIO 3, melodies & alerts' },
 ]
 

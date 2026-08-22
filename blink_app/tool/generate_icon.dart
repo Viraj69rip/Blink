@@ -17,7 +17,7 @@ void main() async {
     'mipmap-xxxhdpi': 192,
   };
 
-  final basePath = 'android/app/src/main/res';
+  const basePath = 'android/app/src/main/res';
 
   for (final entry in densities.entries) {
     final dir = entry.key;

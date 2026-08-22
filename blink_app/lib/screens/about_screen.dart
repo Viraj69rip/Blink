@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/blink_theme.dart';
 import '../theme/blink_constants.dart';
+import '../utils/app_info.dart';
 import '../widgets/glass_container.dart';
 import '../widgets/dotted_logo.dart';
 
@@ -18,7 +19,7 @@ class AboutScreen extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          SizedBox(height: MediaQuery.of(context).padding.top + 40),
+          SizedBox(height: MediaQuery.paddingOf(context).top + 40),
 
           // ── Hero Logo ──────────────────────────────────────────
           GlassContainer(
@@ -53,7 +54,7 @@ class AboutScreen extends StatelessWidget {
                     ),
                   ),
                   child: Text(
-                    'v1.0.0',
+                    'v${AppInfo.version}',
                     style: BlinkTypography.mono.copyWith(
                       fontSize: 12,
                       color: BlinkColors.accent,
@@ -67,20 +68,24 @@ class AboutScreen extends StatelessWidget {
           const SizedBox(height: 24),
 
           // ── Specs Card ─────────────────────────────────────────
-          GlassContainer(
-            padding: const EdgeInsets.all(0),
+          const GlassContainer(
+            padding: EdgeInsets.all(0),
             child: Column(
               children: [
                 _SpecRow(label: 'MCU', value: 'ESP32-C3'),
-                const _SpecDivider(),
-                _SpecRow(label: 'DISPLAY', value: '1.98" OLED 240×320'),
-                const _SpecDivider(),
+                _SpecDivider(),
+                // Matches the panel the firmware actually drives:
+                // U8G2_SSD1306_128X64_NONAME_F_HW_I2C.
+                _SpecRow(label: 'DISPLAY', value: '0.96" OLED 128×64'),
+                _SpecDivider(),
                 _SpecRow(label: 'TOUCH', value: 'Capacitive Sensor'),
-                const _SpecDivider(),
+                _SpecDivider(),
                 _SpecRow(label: 'IMU', value: 'MPU6050 6-Axis'),
-                const _SpecDivider(),
-                _SpecRow(label: 'CONNECTIVITY', value: 'BLE 5.0'),
-                const _SpecDivider(),
+                _SpecDivider(),
+                _SpecRow(label: 'AUDIO', value: 'Piezo Buzzer'),
+                _SpecDivider(),
+                _SpecRow(label: 'CONNECTIVITY', value: 'BLE 5 (NimBLE)'),
+                _SpecDivider(),
                 _SpecRow(label: 'PROTOCOL', value: 'GATT Custom Service'),
               ],
             ),

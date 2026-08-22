@@ -38,6 +38,12 @@ class BlinkColors {
 
   /// Danger / error color for failed states
   static const Color danger = Color(0xFFFF4444);
+
+  /// Indigo pair from the website's OLED simulator "App Mode" composition.
+  /// The BLE pairing animation is a direct port of that scene, so these are
+  /// its literal source colours: `#818cf8` wordmark/bars, `#6366f1` dot core.
+  static const Color pairIndigo = Color(0xFF818CF8);
+  static const Color pairIndigoDeep = Color(0xFF6366F1);
 }
 
 /// Typography system using platform-native sans-serif + monospace faces.

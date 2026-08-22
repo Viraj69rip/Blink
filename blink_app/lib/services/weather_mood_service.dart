@@ -1,48 +1,99 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/ble_manager.dart';
 
-/// Weather-based mood sync service.
-/// Fetches weather and time data, determines robot mood, and syncs over BLE.
+/// Weather + time driven mood sync.
+///
+/// Resolves a coarse location once (IP geolocation, cached in preferences),
+/// pulls current conditions from **Open-Meteo** — which needs no API key and no
+/// account — folds weather and local time into a single mood value in
+/// `-2..2`, and pushes it to the robot as `MOOD:<n>`.
+///
+/// The firmware biases its idle expression pool with that number, so a rainy
+/// midnight looks sleepy and gloomy while a clear spring morning looks
+/// energetic.  Everything degrades gracefully: if the network is unavailable
+/// the mood is derived from local time alone, which still gives the robot a
+/// day/night personality offline.
 class WeatherMoodService extends ChangeNotifier {
   WeatherMoodService._();
   static final WeatherMoodService instance = WeatherMoodService._();
 
+  static const String _prefLat = 'blink_weather_lat';
+  static const String _prefLon = 'blink_weather_lon';
+  static const String _prefCity = 'blink_weather_city';
+  static const Duration _timeSyncInterval = Duration(minutes: 15);
+  static const Duration _weatherInterval = Duration(minutes: 30);
+  static const Duration _netTimeout = Duration(seconds: 10);
+
   Timer? _syncTimer;
   Timer? _weatherTimer;
   bool _isSyncing = false;
+  bool _autoSync = true;
   String? _lastError;
   WeatherMoodData? _currentMoodData;
   DateTime? _lastSyncTime;
 
+  double? _lat;
+  double? _lon;
+  String? _city;
+
+  /// Last mood actually pushed, so a reconnect can replay it without waiting
+  /// for the next 30 minute tick.
+  int? _lastPushedMood;
+
   bool get isSyncing => _isSyncing;
+  bool get autoSyncEnabled => _autoSync;
   String? get lastError => _lastError;
   WeatherMoodData? get currentMoodData => _currentMoodData;
   DateTime? get lastSyncTime => _lastSyncTime;
+  String? get locationLabel => _city;
 
-  /// Initialize periodic sync (every 30 minutes for weather, every minute for time)
+  bool _initialized = false;
+
+  /// Starts periodic sync.  Safe to call more than once — the Android activity
+  /// can be recreated while this singleton survives, and the old code leaked a
+  /// fresh pair of timers on every one of those rebuilds.
   Future<void> initialize() async {
+    if (_initialized) {
+      // Already running; just refresh so a resumed app shows current data.
+      unawaited(_syncTimeAndMood());
+      return;
+    }
+    _initialized = true;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _lat = prefs.getDouble(_prefLat);
+      _lon = prefs.getDouble(_prefLon);
+      _city = prefs.getString(_prefCity);
+    } catch (error) {
+      debugPrint('[WeatherMood] preference load failed: $error');
+    }
+
     await _syncTimeAndMood();
     _startPeriodicSync();
   }
 
   void _startPeriodicSync() {
-    // Sync time every minute
-    _syncTimer = Timer.periodic(const Duration(minutes: 1), (_) {
-      _syncTimeOnly();
-    });
+    // Cancel first — calling this twice used to leave orphaned timers running
+    // forever, each one hammering the BLE link with its own time sync.
+    _syncTimer?.cancel();
+    _weatherTimer?.cancel();
 
-    // Sync weather every 30 minutes
-    _weatherTimer = Timer.periodic(const Duration(minutes: 30), (_) {
-      _syncWeatherAndMood();
+    _syncTimer = Timer.periodic(_timeSyncInterval, (_) {
+      unawaited(_syncTimeOnly());
+    });
+    _weatherTimer = Timer.periodic(_weatherInterval, (_) {
+      unawaited(_syncWeatherAndMood());
     });
   }
 
-  /// Sync both time and weather-based mood
   Future<void> _syncTimeAndMood() async {
     if (_isSyncing) return;
     _isSyncing = true;
@@ -62,192 +113,258 @@ class WeatherMoodService extends ChangeNotifier {
     }
   }
 
-  /// Sync only time to robot RTC
   Future<void> _syncTimeOnly() async {
     final ble = BleManager.instance;
-    if (!ble.isConnected) return;
-
-    await ble.syncTime();
-    debugPrint('[WeatherMood] Time synced to robot');
+    if (!ble.isConnected || ble.firmwareUpdateInProgress) return;
+    try {
+      await ble.syncTime();
+    } catch (error) {
+      debugPrint('[WeatherMood] time sync failed: $error');
+    }
   }
 
-  /// Fetch weather and determine mood, then send to robot
+  /// Recomputes the mood and pushes it.  Never throws.
   Future<void> _syncWeatherAndMood() async {
+    WeatherData? weather;
+    try {
+      weather = await _fetchWeatherData();
+    } catch (e) {
+      debugPrint('[WeatherMood] weather fetch failed: $e');
+      _lastError = 'Weather unavailable — using time of day';
+    }
+
+    // Offline fallback keeps the day/night personality working.
+    weather ??= _timeOnlyWeather();
+
+    final moodData = _calculateMood(weather);
+    _currentMoodData = moodData;
+    notifyListeners();
+
+    await pushMoodToRobot();
+  }
+
+  /// Sends the current mood over BLE.  Called on a timer and on reconnect.
+  Future<void> pushMoodToRobot() async {
     final ble = BleManager.instance;
-    if (!ble.isConnected) return;
+    final mood = _currentMoodData?.moodValue ?? _lastPushedMood;
+    if (mood == null) return;
+    if (!ble.isConnected || ble.firmwareUpdateInProgress) return;
 
     try {
-      final weatherData = await _fetchWeatherData();
-      if (weatherData == null) return;
-
-      final moodData = _calculateMood(weatherData);
-      _currentMoodData = moodData;
-
-      // Send mood to robot: MOOD:-2 to MOOD:2
-      await ble.sendCommand('MOOD:${moodData.moodValue}');
-      debugPrint('[WeatherMood] Mood synced: ${moodData.moodLabel} (${moodData.moodValue})');
-    } catch (e) {
-      debugPrint('[WeatherMood] Weather sync failed: $e');
+      await ble.sendCommand('MOOD:$mood');
+      _lastPushedMood = mood;
+    } catch (error) {
+      debugPrint('[WeatherMood] mood push failed: $error');
     }
   }
 
-  /// Fetch weather data from OpenWeatherMap or similar
-  /// For demo, uses a mock implementation. Replace with real API key.
-  Future<WeatherData?> _fetchWeatherData() async {
-    // TODO: Replace with actual OpenWeatherMap API call
-    // Example:
-    // final response = await http.get(Uri.parse(
-    //   'https://api.openweathermap.org/data/2.5/weather?lat=$lat&lon=$lon&appid=$apiKey&units=metric'
-    // ));
-    // return WeatherData.fromJson(jsonDecode(response.body));
+  // ── Network ──────────────────────────────────────────────────
 
-    // Mock implementation for testing
-    return _getMockWeatherData();
+  Future<WeatherData?> _fetchWeatherData() async {
+    await _ensureLocation();
+    final lat = _lat;
+    final lon = _lon;
+    if (lat == null || lon == null) return null;
+
+    // Open-Meteo: free, no API key, no attribution requirement for non-commercial use.
+    final uri = Uri.https('api.open-meteo.com', '/v1/forecast', {
+      'latitude': lat.toStringAsFixed(3),
+      'longitude': lon.toStringAsFixed(3),
+      'current':
+          'temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code,is_day',
+      'timezone': 'auto',
+    });
+
+    final response = await http.get(uri).timeout(_netTimeout);
+    if (response.statusCode != 200) {
+      throw HttpExceptionLite('Open-Meteo returned ${response.statusCode}');
+    }
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('Unexpected weather payload');
+    }
+    return WeatherData.fromOpenMeteo(decoded, city: _city);
   }
 
-  WeatherData _getMockWeatherData() {
-    // Simulate weather based on time of day for demo
+  /// Coarse IP geolocation, cached permanently.  Deliberately avoids GPS: the
+  /// mood only needs city-level accuracy and asking for location permission
+  /// just to pick a face would be a poor trade.
+  Future<void> _ensureLocation() async {
+    if (_lat != null && _lon != null) return;
+
+    final response = await http
+        .get(Uri.https('ipapi.co', '/json/'))
+        .timeout(_netTimeout);
+    if (response.statusCode != 200) {
+      throw HttpExceptionLite('Geolocation returned ${response.statusCode}');
+    }
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('Unexpected geolocation payload');
+    }
+
+    final lat = (decoded['latitude'] as num?)?.toDouble();
+    final lon = (decoded['longitude'] as num?)?.toDouble();
+    if (lat == null || lon == null) {
+      throw const FormatException('Geolocation had no coordinates');
+    }
+
+    _lat = lat;
+    _lon = lon;
+    _city = decoded['city']?.toString();
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_prefLat, lat);
+      await prefs.setDouble(_prefLon, lon);
+      final city = _city;
+      if (city != null && city.isNotEmpty) {
+        await prefs.setString(_prefCity, city);
+      }
+    } catch (error) {
+      debugPrint('[WeatherMood] could not cache location: $error');
+    }
+  }
+
+  /// Neutral stand-in used when the network is unreachable, so the mood still
+  /// tracks time of day.
+  WeatherData _timeOnlyWeather() {
     final hour = DateTime.now().hour;
     final isNight = hour >= 22 || hour < 6;
-    final isMorning = hour >= 6 && hour < 12;
-    final isAfternoon = hour >= 12 && hour < 18;
-    final isEvening = hour >= 18 && hour < 22;
-
-    // Mock weather conditions
-    String condition;
-    double temp;
-    int humidity;
-    double windSpeed;
-
-    if (isNight) {
-      condition = 'Clear';
-      temp = 18.0;
-      humidity = 65;
-      windSpeed = 2.0;
-    } else if (isMorning) {
-      condition = 'Clouds';
-      temp = 22.0;
-      humidity = 70;
-      windSpeed = 3.0;
-    } else if (isAfternoon) {
-      condition = 'Sunny';
-      temp = 28.0;
-      humidity = 50;
-      windSpeed = 4.0;
-    } else {
-      condition = 'Rain';
-      temp = 24.0;
-      humidity = 80;
-      windSpeed = 5.0;
-    }
-
     return WeatherData(
-      condition: condition,
-      temperature: temp,
-      humidity: humidity,
-      windSpeed: windSpeed,
+      condition: isNight ? 'Clear' : 'Clouds',
+      temperature: 22,
+      humidity: 60,
+      windSpeed: 2,
+      isDay: !isNight,
       timestamp: DateTime.now(),
+      city: _city,
     );
   }
 
-  /// Calculate mood value (-2 to 2) based on weather and time
+  // ── Mood model ───────────────────────────────────────────────
+
+  /// Folds weather and local time into `-2..2`.
+  ///
+  /// Time of day is applied as a bounded *bias* rather than a hard clamp: the
+  /// old version clamped to `-2..0` at night, which meant a beautiful clear
+  /// night could never read as anything but sad.
   WeatherMoodData _calculateMood(WeatherData weather) {
-    int moodValue = 0;
-    String moodLabel = 'Neutral';
+    var score = 0.0;
 
-    // Base mood from weather condition
-    switch (weather.condition.toLowerCase()) {
-      case 'clear':
-      case 'sunny':
-        moodValue += 2;
-        moodLabel = 'Happy';
+    switch (_conditionFamily(weather.condition)) {
+      case _ConditionFamily.clear:
+        score += 1.6;
         break;
-      case 'clouds':
-      case 'partly cloudy':
-      case 'overcast':
-        moodValue += 0;
-        moodLabel = 'Neutral';
+      case _ConditionFamily.cloudy:
+        score += 0.1;
         break;
-      case 'rain':
-      case 'drizzle':
-      case 'thunderstorm':
-        moodValue -= 1;
-        moodLabel = 'Gloomy';
+      case _ConditionFamily.snow:
+        score += 0.9;
         break;
-      case 'snow':
-        moodValue += 1;
-        moodLabel = 'Excited';
+      case _ConditionFamily.fog:
+        score -= 0.9;
         break;
-      case 'mist':
-      case 'fog':
-      case 'haze':
-        moodValue -= 1;
-        moodLabel = 'Sleepy';
+      case _ConditionFamily.drizzle:
+        score -= 0.5;
         break;
-      default:
-        moodValue += 0;
-        moodLabel = 'Neutral';
+      case _ConditionFamily.rain:
+        score -= 1.1;
+        break;
+      case _ConditionFamily.storm:
+        score -= 1.7;
+        break;
+      case _ConditionFamily.unknown:
+        break;
     }
 
-    // Adjust for temperature
-    if (weather.temperature > 30) {
-      moodValue -= 1; // Too hot = grumpy
-      moodLabel = 'Grumpy';
-    } else if (weather.temperature < 10) {
-      moodValue -= 1; // Too cold = sad
-      moodLabel = 'Cold';
-    } else if (weather.temperature >= 20 && weather.temperature <= 25) {
-      moodValue += 1; // Comfortable = happy
-    }
+    // Comfort curve: peaks around 22 °C, falls off either side.
+    final comfort = 1.0 - ((weather.temperature - 22.0).abs() / 14.0);
+    score += comfort.clamp(-1.0, 1.0);
 
-    // Adjust for time of day
-    final hour = DateTime.now().hour;
-    if (hour >= 22 || hour < 6) {
-      // Night time - sleepy
-      moodValue = moodValue.clamp(-2, 0);
-      if (moodValue >= 0) moodLabel = 'Sleepy';
-    } else if (hour >= 6 && hour < 9) {
-      // Morning - energetic
-      moodValue = (moodValue + 1).clamp(-2, 2);
-      moodLabel = 'Energetic';
-    } else if (hour >= 12 && hour < 14) {
-      // Lunch time - content
-      moodValue = moodValue.clamp(-1, 1);
-      moodLabel = 'Content';
-    } else if (hour >= 18 && hour < 22) {
-      // Evening - relaxed
-      moodValue = moodValue.clamp(-1, 1);
-      moodLabel = 'Relaxed';
-    }
+    if (weather.windSpeed > 30) score -= 0.6;
+    if (weather.humidity > 85) score -= 0.3;
 
-    // Clamp to valid range
-    moodValue = moodValue.clamp(-2, 2);
+    // Circadian bias.
+    final now = DateTime.now();
+    final hour = now.hour + now.minute / 60.0;
+    score += _circadianBias(hour);
 
-    // Map to final labels
-    final labels = {
-      -2: 'Sad',
-      -1: 'Gloomy',
-      0: 'Neutral',
-      1: 'Happy',
-      2: 'Excited',
-    };
-    moodLabel = labels[moodValue] ?? 'Neutral';
+    final moodValue = score.round().clamp(-2, 2);
 
     return WeatherMoodData(
       moodValue: moodValue,
-      moodLabel: moodLabel,
+      moodLabel: _moodLabel(moodValue, hour),
       weather: weather,
-      timestamp: DateTime.now(),
+      timestamp: now,
     );
   }
 
-  /// Force immediate sync
+  /// Smooth energy curve over the day: sleepy in the small hours, brightest
+  /// mid-morning, winding down after dinner.  A cosine keeps it continuous so
+  /// the mood never jumps a whole step as the clock ticks over an hour.
+  static double _circadianBias(double hour) {
+    // Peak at 10:00, trough at 22:00 → shift so cos is 1 at hour 10.
+    final phase = (hour - 10.0) / 24.0 * 2 * math.pi;
+    final wave = math.cos(phase); // 1 at 10:00, -1 at 22:00
+    var bias = wave * 0.8;
+    // Deep night gets an extra push toward sleepy regardless of weather.
+    if (hour >= 23 || hour < 6) bias -= 0.9;
+    return bias;
+  }
+
+  static String _moodLabel(int mood, double hour) {
+    final isNight = hour >= 22 || hour < 6;
+    switch (mood) {
+      case 2:
+        return 'Excited';
+      case 1:
+        return isNight ? 'Cosy' : 'Happy';
+      case 0:
+        return isNight ? 'Sleepy' : 'Calm';
+      case -1:
+        return isNight ? 'Drowsy' : 'Gloomy';
+      default:
+        return isNight ? 'Exhausted' : 'Sad';
+    }
+  }
+
+  static _ConditionFamily _conditionFamily(String condition) {
+    switch (condition.toLowerCase()) {
+      case 'clear':
+      case 'sunny':
+        return _ConditionFamily.clear;
+      case 'clouds':
+      case 'partly cloudy':
+      case 'overcast':
+        return _ConditionFamily.cloudy;
+      case 'drizzle':
+        return _ConditionFamily.drizzle;
+      case 'rain':
+        return _ConditionFamily.rain;
+      case 'thunderstorm':
+        return _ConditionFamily.storm;
+      case 'snow':
+        return _ConditionFamily.snow;
+      case 'mist':
+      case 'fog':
+      case 'haze':
+        return _ConditionFamily.fog;
+      default:
+        return _ConditionFamily.unknown;
+    }
+  }
+
+  // ── Control ──────────────────────────────────────────────────
+
   Future<void> forceSync() async {
     await _syncTimeAndMood();
   }
 
-  /// Enable/disable automatic sync
   void setAutoSync(bool enabled) {
+    _autoSync = enabled;
     if (enabled) {
       _startPeriodicSync();
     } else {
@@ -255,6 +372,34 @@ class WeatherMoodService extends ChangeNotifier {
       _weatherTimer?.cancel();
       _syncTimer = null;
       _weatherTimer = null;
+    }
+    notifyListeners();
+  }
+
+  /// Wipes cached location and mood state.  Used by the in-app reset flow.
+  Future<void> reset() async {
+    _syncTimer?.cancel();
+    _weatherTimer?.cancel();
+    _syncTimer = null;
+    _weatherTimer = null;
+    _initialized = false;
+    _isSyncing = false;
+    _autoSync = true;
+    _lastError = null;
+    _currentMoodData = null;
+    _lastSyncTime = null;
+    _lastPushedMood = null;
+    _lat = null;
+    _lon = null;
+    _city = null;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_prefLat);
+      await prefs.remove(_prefLon);
+      await prefs.remove(_prefCity);
+    } catch (error) {
+      debugPrint('[WeatherMood] could not clear cached location: $error');
     }
     notifyListeners();
   }
@@ -267,13 +412,26 @@ class WeatherMoodService extends ChangeNotifier {
   }
 }
 
-/// Weather data model
+enum _ConditionFamily { clear, cloudy, drizzle, rain, storm, snow, fog, unknown }
+
+/// Small local exception type so this service does not depend on `dart:io`
+/// (which would break a future web build).
+class HttpExceptionLite implements Exception {
+  const HttpExceptionLite(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// Current-conditions snapshot.
 class WeatherData {
   final String condition;
-  final double temperature;
-  final int humidity;
-  final double windSpeed;
+  final double temperature; // °C
+  final int humidity; // %
+  final double windSpeed; // km/h
+  final bool isDay;
   final DateTime timestamp;
+  final String? city;
 
   const WeatherData({
     required this.condition,
@@ -281,8 +439,29 @@ class WeatherData {
     required this.humidity,
     required this.windSpeed,
     required this.timestamp,
+    this.isDay = true,
+    this.city,
   });
 
+  /// Open-Meteo `/v1/forecast?current=…` payload.
+  factory WeatherData.fromOpenMeteo(
+    Map<String, dynamic> json, {
+    String? city,
+  }) {
+    final current = json['current'];
+    final map = current is Map<String, dynamic> ? current : const {};
+    return WeatherData(
+      condition: conditionFromWmoCode((map['weather_code'] as num?)?.toInt()),
+      temperature: (map['temperature_2m'] as num?)?.toDouble() ?? 20.0,
+      humidity: (map['relative_humidity_2m'] as num?)?.toInt() ?? 50,
+      windSpeed: (map['wind_speed_10m'] as num?)?.toDouble() ?? 0.0,
+      isDay: ((map['is_day'] as num?)?.toInt() ?? 1) == 1,
+      timestamp: DateTime.now(),
+      city: city,
+    );
+  }
+
+  /// OpenWeatherMap payload, kept so swapping providers needs no call-site edits.
   factory WeatherData.fromJson(Map<String, dynamic> json) {
     return WeatherData(
       condition: json['weather']?[0]?['main']?.toString() ?? 'Unknown',
@@ -292,11 +471,31 @@ class WeatherData {
       timestamp: DateTime.now(),
     );
   }
+
+  /// WMO 4677 weather-code buckets used by Open-Meteo.
+  static String conditionFromWmoCode(int? code) {
+    if (code == null) return 'Unknown';
+    if (code == 0) return 'Clear';
+    if (code <= 3) return 'Clouds';
+    if (code == 45 || code == 48) return 'Fog';
+    if (code >= 51 && code <= 57) return 'Drizzle';
+    if (code >= 61 && code <= 67) return 'Rain';
+    if (code >= 71 && code <= 77) return 'Snow';
+    if (code >= 80 && code <= 82) return 'Rain';
+    if (code == 85 || code == 86) return 'Snow';
+    if (code >= 95) return 'Thunderstorm';
+    return 'Unknown';
+  }
+
+  String get summary {
+    final where = (city != null && city!.isNotEmpty) ? '$city · ' : '';
+    return '$where$condition ${temperature.round()}°C';
+  }
 }
 
-/// Mood data with weather context
+/// Mood plus the weather context that produced it.
 class WeatherMoodData {
-  final int moodValue; // -2 to 2
+  final int moodValue; // -2 … 2
   final String moodLabel;
   final WeatherData weather;
   final DateTime timestamp;

@@ -1,19 +1,21 @@
 import 'dart:async';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:provider/provider.dart';
 
 import 'providers/robot_state_provider.dart';
 import 'services/weather_mood_service.dart';
 import 'theme/blink_theme.dart';
+import 'utils/app_info.dart';
 
 import 'navigation/blink_nav_bar.dart';
 
 import 'screens/splash_screen.dart';
 import 'screens/command_center_screen.dart';
 import 'screens/drawing_screen.dart';
+import 'screens/expression_vault_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/about_screen.dart';
 
@@ -24,6 +26,28 @@ import 'screens/about_screen.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // ---------------------------------------------------------------------------
+  // Global error boundaries.
+  //
+  // The app previously had none, so a single throw on a background/plugin path
+  // silently killed startup with no diagnostic.  Both handlers below swallow
+  // the failure and keep the UI alive; `adb logcat -s flutter` shows the cause.
+  // ---------------------------------------------------------------------------
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    debugPrint('[BLINK] Flutter error: ${details.exception}');
+    if (details.stack != null) debugPrint('${details.stack}');
+  };
+
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    debugPrint('[BLINK] Uncaught async error: $error');
+    debugPrint('$stack');
+    // Returning true marks the error handled so the isolate is not torn down.
+    return true;
+  };
+
+  ErrorWidget.builder = (FlutterErrorDetails details) => const _BlinkErrorPane();
+
   // Never gate the first frame on platform services.  In particular, Android
   // can recreate the activity after an OTA/install intent while plugins are
   // still attaching.  RobotStateProvider starts the non-critical background
@@ -31,6 +55,10 @@ Future<void> main() async {
   unawaited(SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]));
+
+  // Same reasoning: the version is only needed once Settings/About are on
+  // screen, and AppInfo serves a correct fallback until this resolves.
+  unawaited(AppInfo.load());
 
   // Set system UI overlay style — pure black status bar
   SystemChrome.setSystemUIOverlayStyle(
@@ -43,6 +71,26 @@ Future<void> main() async {
   );
 
   runApp(const BlinkApp());
+}
+
+/// Replaces the default grey/red error box so a single bad subtree never
+/// presents the user with an unreadable release-mode error rectangle.
+class _BlinkErrorPane extends StatelessWidget {
+  const _BlinkErrorPane();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ColoredBox(
+      color: BlinkColors.background,
+      child: Center(
+        child: Icon(
+          Icons.error_outline_rounded,
+          color: BlinkColors.textTertiary,
+          size: 28,
+        ),
+      ),
+    );
+  }
 }
 
 /// Root application widget.
@@ -142,7 +190,7 @@ class _BlinkHomeState extends State<BlinkHome> {
           // Page content with swipe transitions
           PageView.builder(
             controller: _pageController,
-            itemCount: 4,
+            itemCount: BlinkNavBar.tabCount,
             onPageChanged: _onPageChanged,
             // Tab changes are deliberately handled by the navbar. This keeps
             // vertical scrolling inside a screen from accidentally changing
@@ -167,12 +215,14 @@ class _BlinkHomeState extends State<BlinkHome> {
   }
 
   Widget _buildTab(int index) {
+    // Order must match BlinkNavBar's item list.
     final child = switch (index) {
       0 => const CommandCenterScreen(key: PageStorageKey('command')),
       1 => const DrawingScreen(key: PageStorageKey('draw')),
-      2 => const SettingsScreen(key: PageStorageKey('settings')),
-      3 => const AboutScreen(key: PageStorageKey('about')),
-      _ => throw RangeError.index(index, const [0, 1, 2, 3]),
+      2 => const ExpressionVaultScreen(key: PageStorageKey('vault')),
+      3 => const SettingsScreen(key: PageStorageKey('settings')),
+      4 => const AboutScreen(key: PageStorageKey('about')),
+      _ => throw RangeError.index(index, const [0, 1, 2, 3, 4]),
     };
 
     // Offscreen tabs keep their scroll state but no longer consume animation

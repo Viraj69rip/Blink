@@ -188,7 +188,9 @@ export default function ProductShowcase() {
               </ul>
 
               <button
+                type="button"
                 onClick={() => openOrder(tier.key)}
+                aria-label={`Order ${tier.name} for ${tier.price}`}
                 className={tier.highlight ? 'btn-primary' : 'btn-secondary'}
                 style={{ width: '100%', justifyContent: 'center', marginTop: 32, textAlign: 'center', border: tier.highlight ? 'none' : '1px solid rgba(255,255,255,0.18)' }}
               >
@@ -201,7 +203,14 @@ export default function ProductShowcase() {
           ))}
         </motion.div>
       </div>
-      <PaymentModal open={modalOpen} onClose={() => setModalOpen(false)} />
+      {/* `variant` is what makes the tier the visitor clicked the tier that
+          opens — without it the modal always started on Basic and
+          `selectedVariant` was dead state. */}
+      <PaymentModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        variant={selectedVariant}
+      />
     </section>
   )
 }

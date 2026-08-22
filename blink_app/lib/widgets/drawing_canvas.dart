@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -51,6 +50,13 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   Offset? _queuedRemotePoint;
   int? _activePointer;
 
+  /// True when the next segment sent to the robot begins a fresh stroke.
+  ///
+  /// Without this, `_lastSentPoint` survived a pointer-up and the first segment
+  /// of the next stroke was drawn from the end of the *previous* one — a long
+  /// straight line slashed across the artwork every time a finger was lifted.
+  bool _startNewStroke = true;
+
   bool _drawModeRequested = false;
   bool _writeInFlight = false;
   bool _clearing = false;
@@ -90,6 +96,13 @@ class DrawingCanvasState extends State<DrawingCanvas> {
     _activePointer = event.pointer;
     final point = _toOled(event.localPosition, size);
     _lastInputPoint = point;
+
+    // Break the link to the previous stroke, and drop any tail point that is
+    // still waiting behind an in-flight write — it belongs to a stroke the user
+    // has already finished.
+    _startNewStroke = true;
+    _queuedRemotePoint = null;
+
     _ensureDrawMode();
 
     // A press without movement is a valid one-pixel mark.
@@ -151,8 +164,13 @@ class DrawingCanvasState extends State<DrawingCanvas> {
     if (target == null) return;
     _queuedRemotePoint = null;
 
-    final from = _lastSentPoint ?? target;
-    if (_lastSentPoint != null && _samePoint(from, target)) return;
+    // The first segment of a stroke is a degenerate `x,y,x,y`, which the
+    // firmware rasterises as a single dot — never a line back to wherever the
+    // pen happened to be lifted.
+    final startNew = _startNewStroke;
+    final from = startNew ? target : (_lastSentPoint ?? target);
+    if (!startNew && _lastSentPoint != null && _samePoint(from, target)) return;
+    _startNewStroke = false;
 
     _writeInFlight = true;
     _lastSentPoint = target;
@@ -217,6 +235,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
     _activePointer = null;
     _lastInputPoint = null;
     _lastSentPoint = null;
+    _startNewStroke = true;
 
     _pixels.fillRange(0, _pixels.length, 0);
     _bitmapRevision.value++;
@@ -244,6 +263,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
       _queuedRemotePoint = null;
       _activePointer = null;
       _lastInputPoint = null;
+      _startNewStroke = true;
     }
   }
 

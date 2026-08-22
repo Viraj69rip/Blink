@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/animation.dart';
 
 import '../theme/blink_theme.dart';
 import '../theme/blink_constants.dart';
@@ -487,7 +486,11 @@ class SettingsToggleTile extends StatelessWidget {
             child: Switch(
               value: value,
               onChanged: onChanged,
-              activeThumbColor: effectiveActiveColor,
+              thumbColor: WidgetStateProperty.resolveWith(
+                (states) => states.contains(WidgetState.selected)
+                    ? effectiveActiveColor
+                    : effectiveInactiveColor,
+              ),
               activeTrackColor: effectiveActiveColor.withValues(alpha: 0.3),
               inactiveThumbColor: effectiveInactiveColor,
               inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
@@ -536,7 +539,12 @@ class ActionButton extends StatelessWidget {
         onTap: disabled ? null : onTap,
         borderRadius: BorderRadius.circular(16),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 14),
+          padding: EdgeInsets.symmetric(
+            vertical: 14,
+            // A content-sized button needs its own horizontal breathing room;
+            // a full-width one gets it from the stretch.
+            horizontal: fullWidth ? 0 : 20,
+          ),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
@@ -545,6 +553,10 @@ class ActionButton extends StatelessWidget {
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
+            // Without this, a Row defaults to MainAxisSize.max and fills the
+            // parent regardless — which is why fullWidth: false previously had
+            // no visible effect in either branch.
+            mainAxisSize: fullWidth ? MainAxisSize.max : MainAxisSize.min,
             children: [
               Icon(
                 icon,
@@ -567,7 +579,7 @@ class ActionButton extends StatelessWidget {
       ),
     );
 
-    if (fullWidth) {
+    if (!fullWidth) {
       return button;
     }
 
@@ -658,11 +670,10 @@ class _ShimmerPlaceholderState extends State<ShimmerPlaceholder>
 class BlinkPageRoute<T> extends PageRouteBuilder<T> {
   BlinkPageRoute({
     required Widget child,
-    RouteSettings? settings,
+    super.settings,
     Duration duration = const Duration(milliseconds: 300),
     Curve curve = Curves.easeOutCubic,
   }) : super(
-          settings: settings,
           pageBuilder: (context, animation, secondaryAnimation) => child,
           transitionDuration: duration,
           reverseTransitionDuration: duration,

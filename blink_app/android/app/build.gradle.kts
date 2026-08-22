@@ -1,5 +1,6 @@
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -7,16 +8,20 @@ plugins {
 android {
     namespace = "com.blink.companion"
     compileSdk = 36
-    ndkVersion = flutter.ndkVersion
+    ndkVersion = "28.2.13676358"
 
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("armeabi-v7a", "arm64-v8a", "x86_64")
-            isUniversalApk = false
-        }
-    }
+    // NOTE: the manual `splits { abi { ... } }` block was removed.
+    //
+    // It produced per-ABI APKs whose versionCode was silently offset by the
+    // Flutter Gradle plugin (arm64 -> 2005, armeabi-v7a -> 1005, ...), while a
+    // plain `flutter build apk` produced a universal APK at versionCode 5.
+    // Sideloading then hit "downgrade not allowed", or installed a stale
+    // universal build over a newer split one.
+    //
+    // Use `flutter build apk --release` for one universal APK (recommended for
+    // manual installs) or `flutter build apk --release --split-per-abi` for
+    // per-ABI artifacts; the Flutter plugin manages the offsets correctly in
+    // the latter case.
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
@@ -25,17 +30,14 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.blink.companion"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = maxOf(flutter.minSdkVersion, 21)
+        minSdk = maxOf(flutter.minSdkVersion, 24)
         targetSdk = flutter.targetSdkVersion
-        versionCode = 5
-        versionName = "4.0.1"
-        ndk {
-            abiFilters.clear()
-        }
+        // Derived from pubspec.yaml `version:` — there is exactly one source of
+        // truth for the app version.  Hardcoding these here made the installed
+        // versionName disagree with what the app reported about itself.
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
     }
 
     signingConfigs {
@@ -84,4 +86,5 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    implementation("com.google.android.play:core:1.10.3")
 }

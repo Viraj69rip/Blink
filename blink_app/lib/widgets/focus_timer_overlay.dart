@@ -57,7 +57,7 @@ class FocusTimerOverlay extends StatelessWidget {
                 style: BlinkTypography.monoLarge,
               ),
               const SizedBox(height: 8),
-              Text(
+              const Text(
                 'POMODORO · ${BlinkConstants.pomodoroMinutes} MIN',
                 style: BlinkTypography.monoSmall,
               ),

@@ -32,6 +32,11 @@ class BlinkNavBar extends StatelessWidget {
       label: 'Draw',
     ),
     _NavItemData(
+      icon: Icons.auto_awesome_outlined,
+      activeIcon: Icons.auto_awesome_rounded,
+      label: 'Vault',
+    ),
+    _NavItemData(
       icon: Icons.settings_outlined,
       activeIcon: Icons.settings_rounded,
       label: 'Settings',
@@ -42,6 +47,10 @@ class BlinkNavBar extends StatelessWidget {
       label: 'About',
     ),
   ];
+
+  /// Number of tabs the bar renders. `main.dart` builds its [PageView] from
+  /// this so the two can never disagree about how many pages exist.
+  static int get tabCount => _items.length;
 
   double _pagePosition() {
     if (!pageController.hasClients) return currentIndex.toDouble();
@@ -273,13 +282,24 @@ class _NavItem extends StatelessWidget {
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      Opacity(
-                        opacity: (1 - emphasis).clamp(0.0, 1.0),
-                        child: Icon(icon, size: 24, color: foreground),
+                      // Cross-faded by modulating each glyph's own alpha rather
+                      // than wrapping it in Opacity. A leaf that draws one glyph
+                      // renders identically either way, but Opacity would push a
+                      // saveLayer per icon — eight of them per frame across the
+                      // bar, on every page-scroll tick.
+                      Icon(
+                        icon,
+                        size: 24,
+                        color: foreground.withValues(
+                          alpha: foreground.a * (1 - emphasis).clamp(0.0, 1.0),
+                        ),
                       ),
-                      Opacity(
-                        opacity: emphasis.clamp(0.0, 1.0),
-                        child: Icon(activeIcon, size: 24, color: foreground),
+                      Icon(
+                        activeIcon,
+                        size: 24,
+                        color: foreground.withValues(
+                          alpha: foreground.a * emphasis.clamp(0.0, 1.0),
+                        ),
                       ),
                     ],
                   ),

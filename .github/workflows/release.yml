@@ -37,7 +37,7 @@ jobs:
         run: |
           echo "$KEYSTORE_BASE64" | base64 --decode > blink_app/android/app/keystore.jks
 
-      - name: Build Android APK configured for this repository
+      - name: Build signed Android APKs
         working-directory: blink_app
         env:
           KEYSTORE_FILE: keystore.jks
@@ -46,7 +46,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           flutter pub get
-          flutter build apk --release --split-per-abi --dart-define=BLINK_GITHUB_REPOSITORY=${{ github.repository }}
+          flutter build apk --release --split-per-abi
           for f in build/app/outputs/flutter-apk/*.apk; do
             base=$(basename "$f")
             arch=$(echo "$base" | sed -E 's/.*-(arm64-v8a|armeabi-v7a|x86_64)-.*/\1/')

@@ -3,347 +3,424 @@ import 'package:provider/provider.dart';
 import '../providers/robot_state_provider.dart';
 import '../theme/blink_theme.dart';
 import '../theme/blink_constants.dart';
+import '../utils/app_info.dart';
 import '../widgets/firmware_update_sheet.dart';
 import '../widgets/blink_components.dart';
 
 /// Settings screen — device configuration, app preferences, and firmware info.
-class SettingsScreen extends StatefulWidget {
+///
+/// Stateless: every control it renders is backed by [RobotStateProvider], so
+/// there is no local UI state left to hold.
+class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
-}
-
-class _SettingsScreenState extends State<SettingsScreen> {
-  bool _autoBrightness = true;
-
-  @override
   Widget build(BuildContext context) {
-    return Consumer<RobotStateProvider>(
-      builder: (context, state, _) {
-        return SingleChildScrollView(
-          physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.symmetric(
-            horizontal: BlinkConstants.paddingH,
+    // Deliberately no root Consumer: the provider notifies at up to 10 Hz while
+    // BLE is streaming, and a Consumer here rebuilt every card in the screen on
+    // each one. Each section subscribes to just the fields it renders instead.
+    return SingleChildScrollView(
+      physics: const BouncingScrollPhysics(),
+      padding: const EdgeInsets.symmetric(
+        horizontal: BlinkConstants.paddingH,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(height: MediaQuery.paddingOf(context).top + 16),
+
+          // ── Header ─────────────────────────────────────────────
+          const Text(
+            'Settings',
+            style: BlinkTypography.displayLarge,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(height: MediaQuery.of(context).padding.top + 16),
+          const SizedBox(height: 4),
+          const SectionLabel(label: 'DEVICE & APP CONFIGURATION'),
 
-              // ── Header ─────────────────────────────────────────────
-              Text(
-                'Settings',
-                style: BlinkTypography.displayLarge,
+          const SizedBox(height: 24),
+
+          // ── Device Section ─────────────────────────────────────
+          const SectionLabel(label: 'DEVICE'),
+          const SizedBox(height: 10),
+
+          GlassCard(
+            padding: EdgeInsets.zero,
+            child: Selector<RobotStateProvider,
+                (BleConnectionState, String, String?, int)>(
+              selector: (_, s) => (
+                s.connectionState,
+                s.deviceName,
+                s.bleStatusMessage,
+                s.batteryLevel,
               ),
-              const SizedBox(height: 4),
-              const SectionLabel(label: 'DEVICE & APP CONFIGURATION'),
+              builder: (context, snap, _) {
+                final conn = snap.$1;
+                final name = snap.$2;
+                final msg = snap.$3;
+                final battery = snap.$4;
+                final connected = conn == BleConnectionState.connected;
+                final scanning = conn == BleConnectionState.scanning;
+                final subtitle = scanning
+                    ? (msg ?? 'Scanning…')
+                    : connected
+                        ? '$name • Connected'
+                        : (msg ?? 'Tap to scan & connect');
 
-              const SizedBox(height: 24),
-
-              // ── Device Section ─────────────────────────────────────
-              const SectionLabel(label: 'DEVICE'),
-              const SizedBox(height: 10),
-
-              GlassCard(
-                padding: EdgeInsets.zero,
-                child: Selector<RobotStateProvider,
-                    (BleConnectionState, String, String?)>(
-                  selector: (_, s) => (
-                    s.connectionState,
-                    s.deviceName,
-                    s.bleStatusMessage,
-                  ),
-                  builder: (context, snap, _) {
-                    final conn = snap.$1;
-                    final name = snap.$2;
-                    final msg = snap.$3;
-                    final connected = conn == BleConnectionState.connected;
-                    final scanning = conn == BleConnectionState.scanning;
-                    final subtitle = scanning
-                        ? (msg ?? 'Scanning…')
-                        : connected
-                            ? '$name • Connected'
-                            : (msg ?? 'Tap to scan & connect');
-
-                    return Column(
-                      children: [
-                        SettingsTile(
-                          icon: Icons.bluetooth_rounded,
-                          title: 'Bluetooth',
-                          subtitle: subtitle,
-                          onTap: () async {
-                            if (connected) {
-                              await state.disconnect();
-                            } else if (!scanning) {
-                              await state.scanAndConnect();
-                            }
-                          },
-                          trailing: Container(
-                            width: 8,
-                            height: 8,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: connected
-                                  ? BlinkColors.accent
-                                  : scanning
-                                      ? Colors.amber
-                                      : BlinkColors.textTertiary,
-                            ),
-                          ),
-                        ),
-                        const BlinkDivider(),
-                        SettingsTile(
-                          icon: Icons.schedule_rounded,
-                          title: 'Sync Time',
-                          subtitle: 'Push phone clock to robot RTC',
-                          onTap: () async {
-                            await state.syncTimeNow();
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Time sync sent over BLE'),
-                                ),
-                              );
-                            }
-                          },
-                          trailing: const Icon(
-                            Icons.sync_rounded,
-                            color: BlinkColors.textTertiary,
-                            size: 18,
-                          ),
-                        ),
-                        const BlinkDivider(),
-                        SettingsTile(
-                          icon: Icons.battery_charging_full_rounded,
-                          title: 'Battery',
-                          subtitle: '${state.batteryLevel}% remaining',
-                          trailing: Text(
-                            '${state.batteryLevel}%',
-                            style: BlinkTypography.mono.copyWith(fontSize: 13),
-                          ),
-                        ),
-                        const BlinkDivider(),
-                        const _FirmwareUpdateTile(),
-                      ],
-                    );
-                  },
-                ),
-              ),
-
-              const SizedBox(height: 20),
-
-              // ── Display Section ────────────────────────────────────
-              const SectionLabel(label: 'DISPLAY'),
-              const SizedBox(height: 10),
-
-              GlassCard(
-                padding: EdgeInsets.zero,
-                child: Column(
+                return Column(
                   children: [
-                    SettingsToggleTile(
-                      icon: Icons.brightness_6_rounded,
-                      title: 'Auto Brightness',
-                      subtitle: 'Adjust OLED based on ambient light',
-                      value: _autoBrightness,
-                      onChanged: (val) {
-                        setState(() {
-                          _autoBrightness = val;
-                        });
+                    SettingsTile(
+                      icon: Icons.bluetooth_rounded,
+                      title: 'Bluetooth',
+                      subtitle: subtitle,
+                      onTap: () async {
+                        final state = context.read<RobotStateProvider>();
+                        if (connected) {
+                          await state.disconnect();
+                        } else if (!scanning) {
+                          await state.scanAndConnect();
+                        }
                       },
+                      trailing: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: connected
+                              ? BlinkColors.accent
+                              : scanning
+                                  ? Colors.amber
+                                  : BlinkColors.textTertiary,
+                        ),
+                      ),
+                    ),
+                    const BlinkDivider(),
+                    SettingsTile(
+                      icon: Icons.schedule_rounded,
+                      title: 'Sync Time',
+                      subtitle: 'Push phone clock to robot RTC',
+                      onTap: () async {
+                        await context.read<RobotStateProvider>().syncTimeNow();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Time sync sent over BLE'),
+                            ),
+                          );
+                        }
+                      },
+                      trailing: const Icon(
+                        Icons.sync_rounded,
+                        color: BlinkColors.textTertiary,
+                        size: 18,
+                      ),
+                    ),
+                    const BlinkDivider(),
+                    SettingsTile(
+                      icon: Icons.battery_charging_full_rounded,
+                      title: 'Battery',
+                      subtitle: '$battery% remaining',
+                      trailing: Text(
+                        '$battery%',
+                        style: BlinkTypography.mono.copyWith(fontSize: 13),
+                      ),
+                    ),
+                    const BlinkDivider(),
+                    const _FirmwareUpdateTile(),
+                  ],
+                );
+              },
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // ── Display Section ────────────────────────────────────
+          const SectionLabel(label: 'DISPLAY'),
+          const SizedBox(height: 10),
+
+          GlassCard(
+            padding: EdgeInsets.zero,
+            child: Selector<RobotStateProvider, (int, bool, bool)>(
+              selector: (_, s) => (
+                s.displayBrightness,
+                s.idleAnimationsEnabled,
+                s.buzzerEnabled,
+              ),
+              builder: (context, snap, _) {
+                final brightness = snap.$1;
+                return Column(
+                  children: [
+                    SettingsTile(
+                      icon: Icons.brightness_6_rounded,
+                      title: 'Display Brightness',
+                      subtitle:
+                          'OLED contrast — ${RobotStateProvider.brightnessLabel(brightness)}',
+                      onTap: () => context
+                          .read<RobotStateProvider>()
+                          .cycleDisplayBrightness(),
+                      trailing: Text(
+                        RobotStateProvider.brightnessLabel(brightness)
+                            .toUpperCase(),
+                        style: BlinkTypography.monoSmall,
+                      ),
                     ),
                     const BlinkDivider(),
                     SettingsToggleTile(
                       icon: Icons.animation_rounded,
                       title: 'Idle Animations',
                       subtitle: 'Smooth ambient face expressions',
-                      value: state.idleAnimationsEnabled,
-                      onChanged: (val) {
-                        state.setIdleAnimations(val);
-                      },
+                      value: snap.$2,
+                      onChanged: (val) => context
+                          .read<RobotStateProvider>()
+                          .setIdleAnimations(val),
                     ),
                     const BlinkDivider(),
                     SettingsToggleTile(
                       icon: Icons.volume_up_rounded,
                       title: 'Buzzer Sound',
                       subtitle: 'Enable sound effects for expressions',
-                      value: true, // TODO: Connect to robot buzzer state
+                      value: snap.$3,
+                      onChanged: (val) => context
+                          .read<RobotStateProvider>()
+                          .setBuzzerEnabled(val),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // ── Weather & Mood Section ─────────────────────────────
+          const SectionLabel(label: 'WEATHER & MOOD'),
+          const SizedBox(height: 10),
+
+          GlassCard(
+            padding: EdgeInsets.zero,
+            child: Consumer<RobotStateProvider>(
+              builder: (context, provider, _) {
+                final moodData = provider.weatherMoodData;
+                return Column(
+                  children: [
+                    SettingsTile(
+                      icon: Icons.wb_sunny_rounded,
+                      title: 'Auto Mood Sync',
+                      subtitle: moodData != null
+                          ? '${moodData.moodLabel} • ${moodData.weather.condition} ${moodData.weather.temperature.toInt()}°C'
+                          : 'Syncing weather…',
+                      trailing: Icon(
+                        moodData != null ? Icons.check_circle : Icons.sync,
+                        color: moodData != null
+                            ? BlinkColors.accent
+                            : BlinkColors.textTertiary,
+                        size: 20,
+                      ),
+                    ),
+                    const BlinkDivider(),
+                    SettingsTile(
+                      icon: Icons.refresh_rounded,
+                      title: 'Sync Now',
+                      subtitle: 'Force weather & time sync to robot',
+                      onTap: () async {
+                        await provider.forceWeatherSync();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Weather & time sync sent'),
+                            ),
+                          );
+                        }
+                      },
+                      trailing: const Icon(
+                        Icons.sync_rounded,
+                        color: BlinkColors.textTertiary,
+                        size: 18,
+                      ),
+                    ),
+                    const BlinkDivider(),
+                    SettingsToggleTile(
+                      icon: Icons.schedule_rounded,
+                      title: 'Auto Sync',
+                      subtitle: 'Automatically sync weather every 30 min',
+                      value: provider.weatherAutoSyncEnabled,
                       onChanged: (val) {
-                        state.setBuzzerEnabled(val);
+                        provider.setWeatherAutoSync(val);
                       },
                     ),
                   ],
-                ),
+                );
+              },
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // ── Sensors Section ────────────────────────────────────
+          const SectionLabel(label: 'SENSORS'),
+          const SizedBox(height: 10),
+
+          GlassCard(
+            padding: EdgeInsets.zero,
+            child: Selector<RobotStateProvider, (bool, int)>(
+              selector: (_, s) => (
+                s.capacitiveTouchEnabled,
+                s.touchSensitivity,
               ),
+              builder: (context, snap, _) => Column(
+                children: [
+                  SettingsToggleTile(
+                    icon: Icons.touch_app_rounded,
+                    title: 'Capacitive Touch',
+                    subtitle: 'Enable petting interactions',
+                    value: snap.$1,
+                    onChanged: (_) => context
+                        .read<RobotStateProvider>()
+                        .toggleCapacitiveTouch(),
+                  ),
+                  const BlinkDivider(),
+                  SettingsTile(
+                    icon: Icons.sensors_rounded,
+                    title: 'Sensitivity',
+                    subtitle: 'How light a touch BLINK reacts to',
+                    onTap: () => context
+                        .read<RobotStateProvider>()
+                        .cycleTouchSensitivity(),
+                    trailing: Text(
+                      RobotStateProvider.sensitivityLabel(snap.$2)
+                          .toUpperCase(),
+                      style: BlinkTypography.monoSmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
 
-              const SizedBox(height: 20),
+          const SizedBox(height: 20),
 
-              // ── Weather & Mood Section ─────────────────────────────
-              const SectionLabel(label: 'WEATHER & MOOD'),
-              const SizedBox(height: 10),
+          // ── App Section ────────────────────────────────────────
+          const SectionLabel(label: 'APP'),
+          const SizedBox(height: 10),
 
-              GlassCard(
-                padding: EdgeInsets.zero,
-                child: Consumer<RobotStateProvider>(
-                  builder: (context, provider, _) {
-                    final moodData = provider.weatherMoodData;
-                    return Column(
-                      children: [
-                        SettingsTile(
-                          icon: Icons.wb_sunny_rounded,
-                          title: 'Auto Mood Sync',
-                          subtitle: moodData != null
-                              ? '${moodData.moodLabel} • ${moodData.weather.condition} ${moodData.weather.temperature.toInt()}°C'
-                              : 'Syncing weather…',
-                          trailing: Icon(
-                            moodData != null ? Icons.check_circle : Icons.sync,
-                            color: moodData != null
-                                ? BlinkColors.accent
-                                : BlinkColors.textTertiary,
-                            size: 20,
-                          ),
-                        ),
-                        const BlinkDivider(),
-                        SettingsTile(
-                          icon: Icons.refresh_rounded,
-                          title: 'Sync Now',
-                          subtitle: 'Force weather & time sync to robot',
-                          onTap: () async {
-                            await provider.forceWeatherSync();
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Weather & time sync sent'),
-                                ),
-                              );
-                            }
-                          },
-                          trailing: const Icon(
-                            Icons.sync_rounded,
-                            color: BlinkColors.textTertiary,
-                            size: 18,
-                          ),
-                        ),
-                        const BlinkDivider(),
-                        SettingsToggleTile(
-                          icon: Icons.schedule_rounded,
-                          title: 'Auto Sync',
-                          subtitle: 'Automatically sync weather every 30 min',
-                          value: true,
-                          onChanged: (val) {
-                            provider.setWeatherAutoSync(val);
-                          },
-                        ),
-                      ],
+          GlassCard(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                SettingsTile(
+                  icon: Icons.info_outline_rounded,
+                  title: 'App Version',
+                  subtitle: 'BLINK Companion v${AppInfo.version}',
+                  trailing: Text(
+                    AppInfo.versionLabel,
+                    style: BlinkTypography.monoSmall,
+                  ),
+                ),
+                const BlinkDivider(),
+                const _AppUpdateTile(),
+                const BlinkDivider(),
+                SettingsTile(
+                  icon: Icons.description_rounded,
+                  title: 'Licenses',
+                  subtitle: 'Open-source licenses',
+                  onTap: () {
+                    showLicensePage(
+                      context: context,
+                      applicationName: 'BLINK',
+                      applicationVersion: 'v${AppInfo.version}',
+                      applicationLegalese: '© 2026 BLINK Project',
                     );
                   },
+                  trailing: const Icon(
+                    Icons.chevron_right_rounded,
+                    color: BlinkColors.textTertiary,
+                    size: 20,
+                  ),
                 ),
-              ),
-
-              const SizedBox(height: 20),
-
-              // ── Sensors Section ────────────────────────────────────
-              const SectionLabel(label: 'SENSORS'),
-              const SizedBox(height: 10),
-
-              GlassCard(
-                padding: EdgeInsets.zero,
-                child: Column(
-                  children: [
-                    SettingsToggleTile(
-                      icon: Icons.touch_app_rounded,
-                      title: 'Capacitive Touch',
-                      subtitle: 'Enable petting interactions',
-                      value: state.capacitiveTouchEnabled,
-                      onChanged: (_) => state.toggleCapacitiveTouch(),
-                    ),
-                    const BlinkDivider(),
-                    SettingsTile(
-                      icon: Icons.sensors_rounded,
-                      title: 'Sensitivity',
-                      subtitle: 'Medium',
-                      onTap: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text(
-                                  'Sensitivity settings not available in this demo.')),
-                        );
-                      },
-                      trailing: const Icon(
-                        Icons.chevron_right_rounded,
-                        color: BlinkColors.textTertiary,
-                        size: 20,
-                      ),
-                    ),
-                  ],
+                const BlinkDivider(),
+                SettingsTile(
+                  icon: Icons.restart_alt_rounded,
+                  title: 'Factory Reset',
+                  subtitle: 'Reset robot to defaults',
+                  onTap: () => _showFactoryResetDialog(
+                    context,
+                    context.read<RobotStateProvider>(),
+                  ),
+                  trailing: Icon(
+                    Icons.chevron_right_rounded,
+                    color: BlinkColors.accent.withValues(alpha: 0.7),
+                    size: 20,
+                  ),
                 ),
-              ),
-
-              const SizedBox(height: 20),
-
-              // ── App Section ────────────────────────────────────────
-              const SectionLabel(label: 'APP'),
-              const SizedBox(height: 10),
-
-              GlassCard(
-                padding: EdgeInsets.zero,
-                child: Column(
-                  children: [
-                    SettingsTile(
-                      icon: Icons.info_outline_rounded,
-                      title: 'App Version',
-                      subtitle: 'BLINK Companion v5.0.0',
-                      trailing: Text(
-                        '5.0.0',
-                        style: BlinkTypography.monoSmall,
-                      ),
-                    ),
-                    const BlinkDivider(),
-                    const _AppUpdateTile(),
-                    const BlinkDivider(),
-                    SettingsTile(
-                      icon: Icons.description_rounded,
-                      title: 'Licenses',
-                      subtitle: 'Open-source licenses',
-                      onTap: () {
-                        showLicensePage(
-                          context: context,
-                          applicationName: 'BLINK',
-                          applicationVersion: 'v5.0.0',
-                          applicationLegalese: '© 2026 BLINK Project',
-                        );
-                      },
-                      trailing: const Icon(
-                        Icons.chevron_right_rounded,
-                        color: BlinkColors.textTertiary,
-                        size: 20,
-                      ),
-                    ),
-                    const BlinkDivider(),
-                    SettingsTile(
-                      icon: Icons.restart_alt_rounded,
-                      title: 'Factory Reset',
-                      subtitle: 'Reset robot to defaults',
-                      onTap: () => _showFactoryResetDialog(context, state),
-                      trailing: Icon(
-                        Icons.chevron_right_rounded,
-                        color: BlinkColors.accent.withValues(alpha: 0.7),
-                        size: 20,
-                      ),
-                    ),
-                  ],
+                const BlinkDivider(),
+                SettingsTile(
+                  icon: Icons.delete_forever_rounded,
+                  title: 'Reset App Data',
+                  subtitle: 'Forget BLINK and clear every app preference',
+                  onTap: () => _showResetEverythingDialog(
+                    context,
+                    context.read<RobotStateProvider>(),
+                  ),
+                  trailing: Icon(
+                    Icons.chevron_right_rounded,
+                    color: BlinkColors.accent.withValues(alpha: 0.7),
+                    size: 20,
+                  ),
                 ),
-              ),
-
-              const SizedBox(height: 120),
-            ],
+              ],
+            ),
           ),
-        );
-      },
+
+          const SizedBox(height: 120),
+        ],
+      ),
     );
   }
 
   void _showFactoryResetDialog(BuildContext context, RobotStateProvider state) {
+    _showResetDialog(
+      context: context,
+      title: 'Factory Reset',
+      body: 'This will reset all robot settings, expressions, and preferences '
+          'to their default values.\n\nThis action cannot be undone.',
+      run: state.factoryReset,
+      // Evaluated after the reset: a queued RESET only actually reached the
+      // robot if the link was still up.
+      result: () => state.connectionState == BleConnectionState.connected
+          ? 'Robot reset — BLINK boot replayed'
+          : 'App reset (connect to sync robot)',
+    );
+  }
+
+  void _showResetEverythingDialog(
+    BuildContext context,
+    RobotStateProvider state,
+  ) {
+    _showResetDialog(
+      context: context,
+      title: 'Reset App Data',
+      body: 'This resets the robot, then forgets the paired BLINK and erases '
+          'every preference, cached weather location, and downloaded update on '
+          'this phone.\n\nYou will need to scan and pair again. This action '
+          'cannot be undone.',
+      confirmLabel: 'ERASE',
+      run: state.resetEverything,
+      result: () => 'App data erased — BLINK forgotten',
+    );
+  }
+
+  /// Shared confirm-then-run flow for both reset actions.
+  ///
+  /// [result] is called *after* [run] completes so the confirmation message can
+  /// reflect the post-reset state rather than the state at button-press time.
+  void _showResetDialog({
+    required BuildContext context,
+    required String title,
+    required String body,
+    required Future<void> Function() run,
+    required String Function() result,
+    String confirmLabel = 'RESET',
+  }) {
     showDialog(
       context: context,
       barrierColor: Colors.black.withValues(alpha: 0.7),
@@ -364,14 +441,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               size: 22,
             ),
             const SizedBox(width: 10),
-            Text(
-              'Factory Reset',
-              style: BlinkTypography.titleMedium,
+            Expanded(
+              child: Text(
+                title,
+                style: BlinkTypography.titleMedium,
+              ),
             ),
           ],
         ),
         content: Text(
-          'This will reset all robot settings, expressions, and preferences to their default values.\n\nThis action cannot be undone.',
+          body,
           style: BlinkTypography.bodyMedium.copyWith(
             color: BlinkColors.textSecondary,
             height: 1.5,
@@ -391,7 +470,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           TextButton(
             onPressed: () async {
               Navigator.of(ctx).pop();
-              await state.factoryReset();
+              await run();
               if (!context.mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
@@ -403,12 +482,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         size: 18,
                       ),
                       const SizedBox(width: 10),
-                      Text(
-                        state.connectionState == BleConnectionState.connected
-                            ? 'Robot reset — BLINK boot replayed'
-                            : 'App reset (connect to sync robot)',
-                        style: BlinkTypography.monoSmall.copyWith(
-                          color: BlinkColors.textPrimary,
+                      Expanded(
+                        child: Text(
+                          result(),
+                          style: BlinkTypography.monoSmall.copyWith(
+                            color: BlinkColors.textPrimary,
+                          ),
                         ),
                       ),
                     ],
@@ -425,7 +504,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               );
             },
             child: Text(
-              'RESET',
+              confirmLabel,
               style: BlinkTypography.labelSmall.copyWith(
                 letterSpacing: 2.0,
                 color: BlinkColors.accent,

@@ -1,13 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../utils/app_info.dart';
 import 'ble_manager.dart';
 
 /// Persists a selected firmware binary, exposes its install state, and keeps a
@@ -28,12 +28,14 @@ class FirmwareUpdateService extends ChangeNotifier {
   static const githubRepository = 'Viraj69rip/Blink';
 
   /// Current app version — compared against GitHub release for app updates.
-  static const appVersion = '5.0.0';
+  /// Resolved from the platform package metadata; see [AppInfo].
+  static String get appVersion => AppInfo.version;
 
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
 
   bool _initialized = false;
+  bool _notificationsReady = true;
   bool _hasPendingUpdate = false;
   String? _fileName;
   String? _filePath;
@@ -49,6 +51,28 @@ class FirmwareUpdateService extends ChangeNotifier {
   String? _robotVersion;
   bool _isUpdateAvailable = false;
   bool _notifiedUpdateAvailable = false;
+
+  /// True while a BLE firmware transfer is running.  Set by [installPendingUpdate]
+  /// so no background download or auto-download can start mid-OTA and blow up
+  /// the heap while the radio is saturated.
+  bool _otaInProgress = false;
+
+  /// Progress updates arrive thousands of times per download.  Rebuilding the
+  /// whole widget tree on each one was a major source of jank and of
+  /// out-of-memory pressure during OTA.  Coalesce to ~10 Hz / 1% deltas.
+  DateTime _lastProgressNotifyAt = DateTime.fromMillisecondsSinceEpoch(0);
+  double _lastNotifiedProgress = -1;
+
+  void _notifyProgress(double progress) {
+    final now = DateTime.now();
+    final movedEnough = (progress - _lastNotifiedProgress).abs() >= 0.01;
+    final waitedEnough =
+        now.difference(_lastProgressNotifyAt) >= const Duration(milliseconds: 100);
+    if (!movedEnough && !waitedEnough) return;
+    _lastProgressNotifyAt = now;
+    _lastNotifiedProgress = progress;
+    notifyListeners();
+  }
 
   // ── App self-update state ──────────────────────────────────────
   bool _isAppUpdateAvailable = false;
@@ -73,6 +97,9 @@ class FirmwareUpdateService extends ChangeNotifier {
   String? get robotVersion => _robotVersion;
   bool get isUpdateAvailable => _isUpdateAvailable;
 
+  bool get robotVersionKnown => _robotVersion != null;
+  bool get otaInProgress => _otaInProgress;
+
   // App update getters
   bool get isAppUpdateAvailable => _isAppUpdateAvailable;
   bool get isDownloadingApk => _downloadingApk;
@@ -88,13 +115,19 @@ class FirmwareUpdateService extends ChangeNotifier {
   }
 
   /// Compares [githubVersion] with [robotVersion] and sets [_isUpdateAvailable].
-  /// Auto-downloads the latest firmware when an update is detected and no
-  /// pending file exists yet.
-  void _evaluateUpdateAvailability() {
+  ///
+  /// This runs on the BLE-notify path (~20 Hz), so it must never start work.
+  /// Auto-download is deliberately *not* triggered here: doing so meant every
+  /// `OTA:PROGRESS` packet could kick off a fresh multi-megabyte HTTP download
+  /// while the robot was mid-flash.  Downloads are now started only from
+  /// [checkGitHubRelease] or by explicit user action.
+  void _evaluateUpdateAvailability({bool allowAutoDownload = false}) {
     _isUpdateAvailable = _isNewerVersion(_githubVersion, _robotVersion);
-    if (_isUpdateAvailable &&
+    if (allowAutoDownload &&
+        _isUpdateAvailable &&
         !_hasPendingUpdate &&
         !_downloadingFirmware &&
+        !_otaInProgress &&
         _githubAssetUrl != null) {
       unawaited(downloadGitHubFirmware().catchError((_) {}));
     }
@@ -117,6 +150,7 @@ class FirmwareUpdateService extends ChangeNotifier {
   /// Fires a one-shot local notification about an available firmware update.
   Future<void> notifyUpdateAvailable() async {
     if (_notifiedUpdateAvailable || !_isUpdateAvailable) return;
+    if (!_notificationsReady) return;
     _notifiedUpdateAvailable = true;
     await _requestNotificationPermission();
     const details = NotificationDetails(
@@ -128,34 +162,56 @@ class FirmwareUpdateService extends ChangeNotifier {
         priority: Priority.defaultPriority,
       ),
     );
-    await _notifications.show(
-      102,
-      'BLINK update available',
-      'v$_robotVersion → v$_githubVersion — install from Settings.',
-      details,
-    );
+    try {
+      await _notifications.show(
+        102,
+        'BLINK update available',
+        'v$_robotVersion → v$_githubVersion — install from Settings.',
+        details,
+      );
+    } catch (error) {
+      debugPrint('[BLINK] update notification failed: $error');
+    }
   }
 
   Future<void> initialize() async {
     if (_initialized) return;
     _initialized = true;
 
-    const settings = InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-    );
-    await _notifications.initialize(settings);
-
-    final prefs = await SharedPreferences.getInstance();
-    final savedPath = prefs.getString(_fileKey);
-    final savedName = prefs.getString(_nameKey);
-    if (savedPath != null && await File(savedPath).exists()) {
-      _filePath = savedPath;
-      _fileName = savedName ?? File(savedPath).uri.pathSegments.last;
-      _hasPendingUpdate = true;
-      await _scheduleDailyReminder();
-    } else {
-      await _clearPersistedUpdate(prefs: prefs, cancelReminder: true);
+    // Every step below touches a platform plugin or the filesystem and can
+    // throw while the Android activity is being recreated.  A throw here used
+    // to abort the whole startup chain silently — the app's "opens once per
+    // install" bug.  Each step is now independently guarded.
+    try {
+      const settings = InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      );
+      await _notifications.initialize(settings);
+    } catch (error) {
+      debugPrint('[BLINK] notification init failed (non-fatal): $error');
+      _notificationsReady = false;
     }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedPath = prefs.getString(_fileKey);
+      final savedName = prefs.getString(_nameKey);
+      if (savedPath != null && await File(savedPath).exists()) {
+        _filePath = savedPath;
+        _fileName = savedName ?? File(savedPath).uri.pathSegments.last;
+        _hasPendingUpdate = true;
+        await _scheduleDailyReminder();
+      } else {
+        await _clearPersistedUpdate(prefs: prefs, cancelReminder: true);
+      }
+    } catch (error) {
+      debugPrint('[BLINK] firmware state restore failed (non-fatal): $error');
+      // Fall back to "nothing pending" rather than leaving half-restored state.
+      _filePath = null;
+      _fileName = null;
+      _hasPendingUpdate = false;
+    }
+
     unawaited(checkGitHubRelease());
     notifyListeners();
   }
@@ -163,6 +219,11 @@ class FirmwareUpdateService extends ChangeNotifier {
   /// Reads the newest published GitHub release. No token is needed for a
   /// public repository; private repositories should use the file-picker flow.
   Future<void> checkGitHubRelease() async {
+    if (_checkingGitHub) return;
+    // Yield once before touching any state.  The firmware update sheet calls
+    // this from build(); mutating + notifying synchronously threw
+    // "setState() called during build" and red-screened the sheet.
+    await Future<void>.delayed(Duration.zero);
     if (_checkingGitHub) return;
     _checkingGitHub = true;
     _githubError = null;
@@ -225,7 +286,7 @@ class FirmwareUpdateService extends ChangeNotifier {
         _isAppUpdateAvailable = false;
       }
 
-      _evaluateUpdateAvailability();
+      _evaluateUpdateAvailability(allowAutoDownload: true);
     } catch (error) {
       _githubAssetUrl = null;
       _githubError = error.toString().replaceFirst('Bad state: ', '');
@@ -238,20 +299,26 @@ class FirmwareUpdateService extends ChangeNotifier {
 
   /// Downloads the selected GitHub release and turns it into the same pending
   /// update used by a manually chosen file. Reports progress via [downloadProgress].
+  ///
+  /// The payload is streamed straight to disk.  The previous implementation
+  /// accumulated it into a growable `List<int>` (8 bytes of heap per firmware
+  /// byte on ARM64, plus grow-and-copy reallocations, plus a final full copy),
+  /// which is what made the update flow OOM on lower-RAM phones.
   Future<void> downloadGitHubFirmware() async {
-    if (_downloadingFirmware) return;
-    _downloadingFirmware = true;
-    _downloadProgress = 0;
+    if (_downloadingFirmware || _otaInProgress) return;
     final url = _githubAssetUrl;
     final name = _githubAssetName;
     if (url == null || name == null) {
-      _downloadingFirmware = false;
       throw StateError('Check GitHub releases before downloading firmware.');
     }
 
+    _downloadingFirmware = true;
+    _downloadProgress = 0;
     _error = null;
     notifyListeners();
+
     final client = HttpClient();
+    File? partial;
     try {
       final request = await client.getUrl(Uri.parse(url));
       request.headers.set(HttpHeaders.userAgentHeader, 'BLINK-Companion');
@@ -261,32 +328,47 @@ class FirmwareUpdateService extends ChangeNotifier {
             'Firmware download returned ${response.statusCode}');
       }
 
-      final contentLength = response.contentLength ?? 0;
-      final chunks = <int>[];
+      final directory = await getApplicationDocumentsDirectory();
+      partial = File('${directory.path}${Platform.pathSeparator}'
+          'blink_pending_firmware.bin.part');
+      final sink = partial.openWrite();
+      final contentLength = response.contentLength;
       int received = 0;
-      await for (final chunk in response) {
-        chunks.addAll(chunk);
-        received += chunk.length;
-        if (contentLength > 0) {
-          _downloadProgress = (received / contentLength).clamp(0.0, 1.0);
+      try {
+        await for (final chunk in response) {
+          sink.add(chunk);
+          received += chunk.length;
+          // dart:io reports -1, not null, when the server omits Content-Length.
+          if (contentLength > 0) {
+            _downloadProgress = (received / contentLength).clamp(0.0, 1.0);
+            _notifyProgress(_downloadProgress);
+          }
         }
-        notifyListeners();
+        await sink.flush();
+      } finally {
+        await sink.close();
       }
 
-      final bytes = Uint8List.fromList(chunks);
-      if (bytes.isEmpty) {
+      if (received == 0) {
         throw const FormatException('Downloaded firmware is empty.');
       }
       _downloadProgress = 1;
       notifyListeners();
-      await _storeFirmware(bytes, name);
+      await _promoteDownloadedFirmware(partial, name);
+      partial = null;
     } catch (error) {
       _error = error.toString().replaceFirst('Bad state: ', '');
       notifyListeners();
       rethrow;
     } finally {
+      if (partial != null && await partial.exists()) {
+        try {
+          await partial.delete();
+        } catch (_) {/* best effort */}
+      }
       _downloadingFirmware = false;
       _downloadProgress = 0;
+      _lastNotifiedProgress = -1;
       client.close(force: true);
     }
   }
@@ -294,6 +376,10 @@ class FirmwareUpdateService extends ChangeNotifier {
   // ── App self-update methods ────────────────────────────────────
 
   /// Downloads the APK asset from the latest GitHub release.
+  ///
+  /// Streamed to disk for the same reason as the firmware: an APK is several
+  /// times larger than a .bin and buffering it in a growable list was a
+  /// guaranteed OOM on mid-range hardware.
   Future<void> downloadAppUpdate() async {
     if (_downloadingApk) return;
     final url = _githubApkUrl;
@@ -316,28 +402,31 @@ class FirmwareUpdateService extends ChangeNotifier {
         throw HttpException('APK download returned ${response.statusCode}');
       }
 
-      final contentLength = response.contentLength ?? 0;
-      final chunks = <int>[];
-      int received = 0;
-      await for (final chunk in response) {
-        chunks.addAll(chunk);
-        received += chunk.length;
-        if (contentLength > 0) {
-          _apkDownloadProgress = (received / contentLength).clamp(0.0, 1.0);
-        }
-        notifyListeners();
-      }
-
-      final bytes = Uint8List.fromList(chunks);
-      if (bytes.isEmpty) {
-        throw const FormatException('Downloaded APK is empty.');
-      }
-
-      // Save APK to app documents directory
       final directory = await getApplicationDocumentsDirectory();
       final target = File(
           '${directory.path}${Platform.pathSeparator}blink_app_update.apk');
-      await target.writeAsBytes(bytes, flush: true);
+      final sink = target.openWrite();
+      final contentLength = response.contentLength;
+      int received = 0;
+      try {
+        await for (final chunk in response) {
+          sink.add(chunk);
+          received += chunk.length;
+          // dart:io reports -1, not null, when the server omits Content-Length.
+          if (contentLength > 0) {
+            _apkDownloadProgress = (received / contentLength).clamp(0.0, 1.0);
+            _notifyProgress(_apkDownloadProgress);
+          }
+        }
+        await sink.flush();
+      } finally {
+        await sink.close();
+      }
+
+      if (received == 0) {
+        throw const FormatException('Downloaded APK is empty.');
+      }
+
       _pendingApkPath = target.path;
       _apkDownloadProgress = 1;
       notifyListeners();
@@ -347,6 +436,7 @@ class FirmwareUpdateService extends ChangeNotifier {
       rethrow;
     } finally {
       _downloadingApk = false;
+      _lastNotifiedProgress = -1;
       client.close(force: true);
     }
   }
@@ -356,16 +446,41 @@ class FirmwareUpdateService extends ChangeNotifier {
   /// to trigger the Android package installer.
   String? get pendingApkPath => _pendingApkPath;
 
+  /// Renames a fully-downloaded `.part` file into place and registers it as the
+  /// pending update.  Atomic-ish: the pending path only ever points at a
+  /// complete file.
+  Future<void> _promoteDownloadedFirmware(File partial, String name) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final targetPath =
+        '${directory.path}${Platform.pathSeparator}blink_pending_firmware.bin';
+    final existing = File(targetPath);
+    if (await existing.exists()) {
+      try {
+        await existing.delete();
+      } catch (_) {/* overwrite below */}
+    }
+    final target = await partial.rename(targetPath);
+    await _registerPendingFirmware(target.path, name);
+  }
+
   Future<void> _storeFirmware(Uint8List bytes, String name) async {
     final directory = await getApplicationDocumentsDirectory();
     final target = File(
         '${directory.path}${Platform.pathSeparator}blink_pending_firmware.bin');
     await target.writeAsBytes(bytes, flush: true);
+    await _registerPendingFirmware(target.path, name);
+  }
 
+  /// Registers an externally supplied firmware image (e.g. a user-picked
+  /// `.bin`) as the pending update.
+  Future<void> storeFirmwareBytes(Uint8List bytes, String name) =>
+      _storeFirmware(bytes, name);
+
+  Future<void> _registerPendingFirmware(String path, String name) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_fileKey, target.path);
+    await prefs.setString(_fileKey, path);
     await prefs.setString(_nameKey, name);
-    _filePath = target.path;
+    _filePath = path;
     _fileName = name;
     _hasPendingUpdate = true;
     await _requestNotificationPermission();
@@ -373,13 +488,22 @@ class FirmwareUpdateService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Streams the pending firmware to BLINK over BLE.
+  ///
+  /// A successful transfer ends with the robot rebooting, which tears down the
+  /// link.  That is expected, not a failure — [BleManager.installFirmware]
+  /// resolves normally in that case, so the pending file is cleared here.
   Future<void> installPendingUpdate(BleManager ble) async {
     final path = _filePath;
     if (!_hasPendingUpdate || path == null || !await File(path).exists()) {
       throw StateError('Download a firmware release before updating BLINK.');
     }
+    if (_otaInProgress) {
+      throw StateError('A firmware update is already running.');
+    }
 
     _error = null;
+    _otaInProgress = true;
     notifyListeners();
     try {
       await ble.installFirmware(await File(path).readAsBytes());
@@ -388,16 +512,25 @@ class FirmwareUpdateService extends ChangeNotifier {
       _error = error.toString().replaceFirst('Bad state: ', '');
       notifyListeners();
       rethrow;
+    } finally {
+      _otaInProgress = false;
+      notifyListeners();
     }
   }
 
   Future<void> _requestNotificationPermission() async {
-    final android = _notifications.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
-    await android?.requestNotificationsPermission();
+    if (!_notificationsReady) return;
+    try {
+      final android = _notifications.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      await android?.requestNotificationsPermission();
+    } catch (error) {
+      debugPrint('[BLINK] notification permission request failed: $error');
+    }
   }
 
   Future<void> _scheduleDailyReminder() async {
+    if (!_notificationsReady) return;
     const details = NotificationDetails(
       android: AndroidNotificationDetails(
         'firmware_updates',
@@ -407,14 +540,21 @@ class FirmwareUpdateService extends ChangeNotifier {
         priority: Priority.defaultPriority,
       ),
     );
-    await _notifications.periodicallyShow(
-      _reminderId,
-      'BLINK update ready',
-      'Install ${_fileName ?? 'the selected firmware'} when BLINK is nearby.',
-      RepeatInterval.daily,
-      details,
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-    );
+    try {
+      await _notifications.periodicallyShow(
+        _reminderId,
+        'BLINK update ready',
+        'Install ${_fileName ?? 'the selected firmware'} when BLINK is nearby.',
+        RepeatInterval.daily,
+        details,
+        // Inexact deliberately: exact alarms need SCHEDULE_EXACT_ALARM /
+        // USE_EXACT_ALARM, which are not declared.  Do not switch to an exact
+        // mode without adding the permission or this will start throwing.
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      );
+    } catch (error) {
+      debugPrint('[BLINK] daily reminder schedule failed: $error');
+    }
   }
 
   Future<void> _clearPersistedUpdate({
@@ -424,16 +564,53 @@ class FirmwareUpdateService extends ChangeNotifier {
     final storedPrefs = prefs ?? await SharedPreferences.getInstance();
     final path = _filePath ?? storedPrefs.getString(_fileKey);
     if (path != null) {
-      final file = File(path);
-      if (await file.exists()) await file.delete();
+      try {
+        final file = File(path);
+        if (await file.exists()) await file.delete();
+      } catch (error) {
+        debugPrint('[BLINK] could not delete stale firmware: $error');
+      }
     }
     await storedPrefs.remove(_fileKey);
     await storedPrefs.remove(_nameKey);
-    if (cancelReminder) await _notifications.cancel(_reminderId);
+    if (cancelReminder && _notificationsReady) {
+      try {
+        await _notifications.cancel(_reminderId);
+      } catch (error) {
+        debugPrint('[BLINK] reminder cancel failed: $error');
+      }
+    }
     _filePath = null;
     _fileName = null;
     _hasPendingUpdate = false;
     _error = null;
+    notifyListeners();
+  }
+
+  /// Clears every persisted firmware/app-update artefact.  Used by the
+  /// in-app reset flow.
+  Future<void> resetAll() async {
+    await _clearPersistedUpdate(cancelReminder: true);
+    final apk = _pendingApkPath;
+    if (apk != null) {
+      try {
+        final file = File(apk);
+        if (await file.exists()) await file.delete();
+      } catch (_) {/* best effort */}
+    }
+    _pendingApkPath = null;
+    _githubVersion = null;
+    _githubAssetName = null;
+    _githubAssetUrl = null;
+    _githubReleaseNotes = null;
+    _githubApkUrl = null;
+    _githubApkName = null;
+    _githubError = null;
+    _appUpdateError = null;
+    _isUpdateAvailable = false;
+    _isAppUpdateAvailable = false;
+    _notifiedUpdateAvailable = false;
+    _robotVersion = null;
     notifyListeners();
   }
 }

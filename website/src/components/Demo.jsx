@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
+import usePrefersReducedMotion from '../hooks/usePrefersReducedMotion'
 
 const states = [
   { id: 'idle', label: 'Idle' },
@@ -142,35 +143,79 @@ function drawApp(ctx, t, w, h) {
 
 const drawers = { idle: drawIdle, happy: drawHappy, dizzy: drawDizzy, yawn: drawYawn, love: drawLove, app: drawApp }
 
+// 2× the robot's real 128×64 panel, so strokes land on half-pixels and the
+// upscale stays crisp. The 2:1 aspect ratio is the panel's own.
+const CANVAS_W = 256
+const CANVAS_H = 128
+
 export default function Demo() {
   const canvasRef = useRef(null)
+  const frameRef = useRef(null)
   const [currentState, setCurrentState] = useState('idle')
+  const [visible, setVisible] = useState(false)
   const stateRef = useRef('idle')
+  const reducedMotion = usePrefersReducedMotion()
 
   useEffect(() => {
     stateRef.current = currentState
   }, [currentState])
 
+  // Only animate while the simulator is actually on screen. requestAnimationFrame
+  // keeps firing at 60 Hz for a canvas scrolled far out of view, which used to
+  // burn a frame's worth of work per tick for the whole visit.
+  useEffect(() => {
+    const frame = frameRef.current
+    if (!frame) return
+    const observer = new IntersectionObserver(
+      ([entry]) => setVisible(entry.isIntersecting),
+      { rootMargin: '120px' },
+    )
+    observer.observe(frame)
+    return () => observer.disconnect()
+  }, [])
+
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
-    let animId
-    let start = performance.now()
+    if (!ctx) return
 
-    function render(ts) {
-      const t = (ts - start) / 1000
-      const w = canvas.width
-      const h = canvas.height
+    const w = canvas.width
+    const h = canvas.height
+
+    const paint = (t) => {
+      // Reset everything the draw functions mutate. They share one context, so
+      // leaving e.g. textAlign: 'center' set by App Mode used to shift the
+      // sleep "z" glyphs the next time Yawning was selected.
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'alphabetic'
+      ctx.lineCap = 'butt'
+      ctx.lineWidth = 1
+      ctx.shadowBlur = 0
       ctx.fillStyle = '#000000'
       ctx.fillRect(0, 0, w, h)
       const draw = drawers[stateRef.current]
       if (draw) draw(ctx, t, w, h)
+    }
+
+    if (reducedMotion || !visible) {
+      // Still show the face, just frozen at a representative moment rather
+      // than a black rectangle.
+      paint(1.2)
+      return
+    }
+
+    let animId
+    const start = performance.now()
+    const render = (ts) => {
+      paint((ts - start) / 1000)
       animId = requestAnimationFrame(render)
     }
     animId = requestAnimationFrame(render)
     return () => cancelAnimationFrame(animId)
-  }, [])
+  }, [visible, reducedMotion, currentState])
+
+  const activeLabel = states.find((s) => s.id === currentState)?.label
 
   return (
     <section id="demo" className="section" style={{ position: 'relative' }}>
@@ -183,18 +228,19 @@ export default function Demo() {
           style={{ textAlign: 'center', marginBottom: 48 }}
         >
           <div className="section-label" style={{ margin: '0 auto 20px' }}>
-            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" d="M14.25 9.75L16.5 12l-2.25 2.25m-4.5 0L7.5 12l2.25-2.25M6 20.25h12A2.25 2.25 0 0020.25 18V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z" />
             </svg>
             Live Demo
           </div>
           <h2 className="section-title">OLED Simulator</h2>
           <p className="section-subtitle" style={{ margin: '0 auto' }}>
-            See BLINK's emotional states in action on a pixel-accurate 128x64 display simulation.
+            BLINK&apos;s emotional states, rendered at 2&times; the robot&apos;s real 128&times;64 OLED. Pick a mood.
           </p>
         </motion.div>
 
         <motion.div
+          ref={frameRef}
           initial={{ opacity: 0, scale: 0.95 }}
           whileInView={{ opacity: 1, scale: 1 }}
           viewport={{ once: true, margin: '-80px' }}
@@ -227,37 +273,53 @@ export default function Demo() {
                 aspectRatio: '2/1',
               }}
             >
-              <canvas ref={canvasRef} width="256" height="128" style={{ width: '100%', height: '100%', imageRendering: 'pixelated' }} />
+              <canvas
+                ref={canvasRef}
+                width={CANVAS_W}
+                height={CANVAS_H}
+                role="img"
+                aria-label={`BLINK OLED simulation showing the ${activeLabel} state`}
+                style={{ width: '100%', height: '100%', imageRendering: 'pixelated', display: 'block' }}
+              />
             </div>
           </div>
 
-          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginTop: 24 }}>
-            {states.map((s) => (
-              <motion.button
-                key={s.id}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setCurrentState(s.id)}
-                style={{
-                  padding: '8px 18px',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  borderRadius: 'var(--radius-full)',
-                  border: '1px solid',
-                  borderColor: currentState === s.id ? 'rgba(99, 102, 241, 0.5)' : 'var(--color-border)',
-                  background: currentState === s.id ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255,255,255,0.04)',
-                  color: currentState === s.id ? '#fff' : 'var(--color-text-secondary)',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s',
-                }}
-              >
-                {s.label}
-              </motion.button>
-            ))}
+          <div
+            role="group"
+            aria-label="Robot state"
+            style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginTop: 24 }}
+          >
+            {states.map((s) => {
+              const active = currentState === s.id
+              return (
+                <motion.button
+                  key={s.id}
+                  type="button"
+                  aria-pressed={active}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => setCurrentState(s.id)}
+                  style={{
+                    padding: '8px 18px',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    borderRadius: 'var(--radius-full)',
+                    border: '1px solid',
+                    borderColor: active ? 'rgba(99, 102, 241, 0.5)' : 'var(--color-border)',
+                    background: active ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255,255,255,0.04)',
+                    color: active ? '#fff' : 'var(--color-text-secondary)',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  {s.label}
+                </motion.button>
+              )
+            })}
           </div>
 
           <p style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'var(--color-text-tertiary)' }}>
-            Current state: <span style={{ color: 'var(--color-accent-light)', fontWeight: 600 }}>{states.find((s) => s.id === currentState)?.label}</span>
+            Current state: <span style={{ color: 'var(--color-accent-light)', fontWeight: 600 }}>{activeLabel}</span>
           </p>
         </motion.div>
       </div>

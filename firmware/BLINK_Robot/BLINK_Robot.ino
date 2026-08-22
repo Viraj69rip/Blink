@@ -54,7 +54,7 @@ static const int PIN_BUZZER  = 3;
 #define OTA_DATA_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26ad"  // Write: firmware binary chunks
 #define OTA_STATUS_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26ae"  // Read/notify: version and OTA progress
 
-static const char* FIRMWARE_VERSION = "4.0.0";
+static const char* FIRMWARE_VERSION = "4.1.0";
 
 // ─── Timing / thresholds ───────────────────────────────────────────────────
 static const uint32_t BOOT_MS           = 2200;
@@ -70,17 +70,40 @@ static const uint32_t NIGHT_CHECK_MS    = 35000; // roll for sleepy yawn ~every 
 static const uint8_t  NIGHT_YAWN_CHANCE = 22;    // % chance per check (22% ≈ once / ~2.5 min)
 static const int      NIGHT_START_HOUR  = 22;    // 10 PM
 static const int      NIGHT_END_HOUR    = 6;     // 6 AM
-static const float    SHAKE_THRESHOLD   = 1.08f; // total acceleration threshold in g (more sensitive)
-static const float    SHAKE_DELTA_G     = 0.18f; // sudden motion above the resting baseline (more sensitive)
-static const float    SHAKE_GYRO_DPS    = 120.0f; // rotational shake threshold (more sensitive)
-static const uint32_t SHAKE_COOLDOWN_MS = 600;  // prevents repeated dizzy restarts (faster recovery)
-static const uint32_t TAP_MAX_MS        = 300;   // max touch duration counted as tap
-static const uint32_t TAP_GAP_MS        = 350;   // max gap between taps in a gesture
-static const uint32_t TAP_SETTLE_MS     = 400;   // idle time before gesture fires
-static const uint32_t LONG_PRESS_MS     = 2000;  // hold to return to main face
+// ─── Motion / shake (MPU6050) ──────────────────────────────────────────────
+// Shake is detected from the *gravity-removed* acceleration residual, never
+// from the raw magnitude.  The old code compared raw magnitude against 1.08 g
+// while continuously adapting the baseline toward the current reading, so the
+// baseline drifted up to meet any sustained motion and the trip point moved out
+// from under the shake.  A slow EMA of the acceleration *vector* estimates
+// gravity; whatever is left over is real movement.
+static const float    SHAKE_ACCEL_MS2   = 3.4f;   // residual jolt (~0.35 g)
+static const float    SHAKE_GYRO_DPS    = 210.0f; // rotational jolt
+static const uint8_t  SHAKE_HITS_NEEDED = 3;      // jolts required to call it a shake
+static const uint32_t SHAKE_WINDOW_MS   = 750;    // window the jolts must land in
+static const uint32_t SHAKE_HIT_GAP_MS  = 55;     // one physical jolt must not count twice
+static const uint32_t SHAKE_COOLDOWN_MS = 1400;   // no re-trigger while recovering
+static const uint32_t MOTION_POLL_MS    = 20;     // fixed 50 Hz sampling, state-independent
 
-// Drawing BLE throttle - reduced for ultra-low latency
-static const uint32_t DRAW_BLE_THROTTLE_MS = 8; // ~125 Hz max draw updates
+// ─── Touch gestures ────────────────────────────────────────────────────────
+// Gesture map (matches the app's help text):
+//   1 tap   → select / confirm the highlighted item
+//   2 taps  → open the menu
+//   3 taps  → back / exit
+//   hold    → scroll to the next item, repeating while held
+//   2s hold → straight home from anywhere
+static const uint32_t TOUCH_DEBOUNCE_MS = 25;    // ignore edges faster than this
+static const uint32_t TAP_MAX_MS        = 350;   // max press length still counted as a tap
+// TAP_SETTLE_MS is the real grouping window: the gesture only fires once the pin
+// has been quiet for this long, and never while a finger is down.  TAP_GAP_MS is
+// just a safety net for a stuck reading, so it is deliberately set beyond
+// TAP_SETTLE + TAP_MAX — at 320 ms it was *narrower* than the settle window,
+// which silently discarded the first tap of a slow double-tap.
+static const uint32_t TAP_GAP_MS        = 620;   // release-to-release backstop
+static const uint32_t TAP_SETTLE_MS     = 260;   // quiet time before the gesture fires
+static const uint32_t HOLD_SCROLL_MS    = 600;   // hold this long to start scrolling
+static const uint32_t HOLD_REPEAT_MS    = 420;   // then advance once per this interval
+static const uint32_t LONG_PRESS_MS     = 2000;  // hold to return to the main face
 
 static const int OLED_W = 128;
 static const int OLED_H = 64;
@@ -141,6 +164,20 @@ bool buzzerEnabled = true;  // Buzzer mute/unmute
 char stopwatchText[16] = "";   // optional "MM:SS" overlay from app
 bool idleAnimationsEnabled = true;
 
+// Runtime OLED contrast, driven by `BRIGHT:<0-255>` from the app.  The panel
+// has no ambient-light sensor, so this is a deliberate user setting rather than
+// anything automatic.  Not persisted here: the app owns the value and replays it
+// on every connect, same as the touch/buzzer/animation flags.
+uint8_t displayContrast = 255;
+
+// Debounce window for the touch pad, driven by `SENS:LOW|MED|HIGH`.
+//
+// PIN_TOUCH is a plain digital input — there is no analog level to threshold —
+// so the only honest sensitivity knob is how long contact must persist before it
+// counts.  A short window reacts to the lightest brush; a long one ignores
+// glancing or accidental contact.
+uint32_t touchDebounceMs = TOUCH_DEBOUNCE_MS;
+
 // BLE pairing animation state
 enum BlePairState : uint8_t {
   BLE_PAIR_IDLE = 0,
@@ -179,8 +216,15 @@ static const char* MENU_ITEMS[MENU_COUNT] = {
   "Go Back"
 };
 
-// Touch gesture detection (single / double / triple tap)
-bool touchActive = false;
+// Touch gesture detection (single / double / triple tap + hold-to-scroll).
+//
+// `rawTouchLevel` is the last level read straight off the pin; `touchStable` is
+// the debounced level everything else uses.  Without the debounce a single
+// finger tap on a TTP223 produced a burst of edges and the tap counter ran
+// straight past 3, which is why gestures behaved randomly or not at all.
+bool touchStable = false;
+bool rawTouchLevel = false;
+uint32_t rawTouchChangedAt = 0;
 bool touchWasActive = false;
 uint32_t touchDownAt = 0;
 uint32_t touchUpAt = 0;
@@ -188,8 +232,15 @@ int pendingTapCount = 0;
 uint32_t tapWindowStart = 0;
 uint32_t lastGestureAt = 0;
 
+// Idle level learned at boot, so both active-high (TTP223) and active-low
+// touch breakouts work without a code change.
+bool touchIdleLevel = false;
+
 // Long-press detection: hold from any menu screen to return to the main face.
 bool longPressTriggered = false;
+// Hold-to-scroll: after HOLD_SCROLL_MS the hold starts advancing the selection.
+bool holdScrollActive = false;
+uint32_t lastHoldScrollAt = 0;
 
 // ─── Idle Animation Pool (Mochi-style varied expressions) ────────────────
 static const int IDLE_ANIM_COUNT = 21;
@@ -224,6 +275,32 @@ static const uint8_t IDLE_ANIM_WEIGHTS[IDLE_ANIM_COUNT] = {
   2,  // 18 Excited shake
   2,  // 19 Tongue out
   2,  // 20 Snoring
+};
+
+// How energetic each animation reads.  Used to bias selection by weatherMood:
+// -1 = calm/quiet, 0 = neutral, +1 = lively.  Index-parallel to the weights.
+static const int8_t IDLE_ANIM_ENERGY[IDLE_ANIM_COUNT] = {
+   0,  // 0  Default face
+   0,  // 1  Curious
+   1,  // 2  Winking
+  -1,  // 3  Stargazing
+   1,  // 4  Bouncy
+  -1,  // 5  Sleepy blink
+   0,  // 6  Cat face
+   1,  // 7  Sparkle eyes
+   0,  // 8  Confused
+   1,  // 9  Whistling
+   0,  // 10 Nervous
+   1,  // 11 Cool shades
+   0,  // 12 Chewing
+   0,  // 13 Peeking
+  -1,  // 14 Heart bubbles
+   0,  // 15 Robot scan
+   1,  // 16 Pixel dance
+  -1,  // 17 Dreamy
+   1,  // 18 Excited shake
+   1,  // 19 Tongue out
+  -1,  // 20 Snoring
 };
 
 // Night-safe animations (calm/quiet only)
@@ -276,19 +353,30 @@ static const float MCLOCK_BOUNCE_VEL = 2.0f;
 static const int MCLOCK_START_X = -15;
 static const uint32_t MCLOCK_ANIM_MS = 35; // ~28 FPS animation tick
 
-// MPU baseline + battery
-float mpuBaselineG = 1.0f;
-bool mpuBaselineReady = false;
+// Motion state.  `gravity*` is a slow EMA of the acceleration vector, which
+// tracks orientation; subtracting it leaves only real movement.
+float gravityX = 0.0f, gravityY = 0.0f, gravityZ = 9.80665f;
+bool  gravityReady = false;
+uint8_t shakeHits = 0;
+uint32_t shakeWindowStart = 0;
+uint32_t lastShakeHitAt = 0;
+uint32_t lastMotionPollAt = 0;
+float lastMotionResidual = 0.0f;   // exposed on the HW info screen
+uint8_t mpuRetryCount = 0;         // drives exponential backoff
 uint32_t lastBatteryReadAt = 0;
 int batteryPercent = 0;
 
-// Drawing buffer: lines stored as segments for redraw in APP_MODE
-struct DrawSeg {
-  int16_t x1, y1, x2, y2;
-};
-static const int MAX_SEGS = 256;
-DrawSeg segs[MAX_SEGS];
-int segCount = 0;
+// ─── Drawing canvas ────────────────────────────────────────────────────────
+// A 1 bpp bitmap, not a segment list.
+//
+// The old 256-segment ring dropped its oldest half whenever it filled, which at
+// normal drawing speed erased half the artwork every few seconds, and it had to
+// re-rasterise every stroke on every one of the ~60 frames per second.  A
+// bitmap is 1 KB flat, never forgets, and costs one memcpy per frame.
+static const int CANVAS_STRIDE = OLED_W / 8;              // 16 bytes per row
+static const int CANVAS_BYTES  = CANVAS_STRIDE * OLED_H;  // 1024 bytes
+uint8_t canvas[CANVAS_BYTES];
+bool canvasDirty = false;
 
 // BLE
 NimBLEServer* bleServer = nullptr;
@@ -344,10 +432,25 @@ static const ToneStep SOUND_TAP[] = {{1047, 30, 0}};
 // Pending BLE payloads (set in callbacks, handled in loop — keep callbacks short)
 volatile bool pendingTime = false;
 volatile bool pendingCmd = false;
-volatile bool pendingDraw = false;
 char timeBuf[24];
 char cmdBuf[48];
-char drawBuf[32];
+
+// Draw segments arrive far faster than one per loop iteration, so they go into a
+// lock-free ring instead of a single slot.
+//
+// The old design had one `drawBuf` that each incoming write memcpy'd over, plus
+// an 8 ms throttle that *discarded* rather than deferred anything arriving
+// inside the window.  Between the two, most of a fast stroke never reached the
+// rasteriser — which is exactly why drawings appeared as disconnected dots.
+struct DrawSegment {
+  int16_t x1, y1, x2, y2;
+};
+static const uint8_t DRAW_QUEUE_SIZE = 64;  // power of two, wraps with a mask
+static const uint8_t DRAW_QUEUE_MASK = DRAW_QUEUE_SIZE - 1;
+DrawSegment drawQueue[DRAW_QUEUE_SIZE];
+volatile uint8_t drawQueueHead = 0;  // written by the BLE callback
+volatile uint8_t drawQueueTail = 0;  // read by loop()
+volatile uint32_t drawDroppedCount = 0;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -602,7 +705,8 @@ void drawNightMoon(int x, int y) {
 }
 
 void clearDrawing() {
-  segCount = 0;
+  memset(canvas, 0, sizeof(canvas));
+  canvasDirty = true;
 }
 
 void factoryResetRobot() {
@@ -615,21 +719,60 @@ void factoryResetRobot() {
   menuIndex = 0;
   stopwatchText[0] = '\0';
   idleAnimationsEnabled = true;
+  touchDebounceMs = TOUCH_DEBOUNCE_MS;
+  displayContrast = 255;
+  u8g2.setContrast(displayContrast);
   // Replay boot "BLINK" animation, then return to IDLE with kept RTC
   enterState(STATE_BOOT);
 }
 
-void addDrawLine(int x1, int y1, int x2, int y2) {
-  x1 = clampi(x1, 0, OLED_W - 1);
-  y1 = clampi(y1, 0, OLED_H - 1);
-  x2 = clampi(x2, 0, OLED_W - 1);
-  y2 = clampi(y2, 0, OLED_H - 1);
-  if (segCount >= MAX_SEGS) {
-    // Drop oldest half to keep streaming drawings alive
-    memmove(segs, segs + MAX_SEGS / 2, (MAX_SEGS / 2) * sizeof(DrawSeg));
-    segCount = MAX_SEGS / 2;
+// ─── Canvas raster ─────────────────────────────────────────────────────────
+
+inline void canvasSetPixel(int x, int y) {
+  if ((unsigned)x >= (unsigned)OLED_W || (unsigned)y >= (unsigned)OLED_H) return;
+  canvas[y * CANVAS_STRIDE + (x >> 3)] |= (uint8_t)(0x80 >> (x & 7));
+}
+
+// Bresenham with a 2 px nib, so strokes read as lines on a 128x64 panel instead
+// of a 1 px hairline that the eye reads as a dotted trail.
+void canvasDrawLine(int x0, int y0, int x1, int y1) {
+  int dx = abs(x1 - x0);
+  int sx = x0 < x1 ? 1 : -1;
+  int dy = -abs(y1 - y0);
+  int sy = y0 < y1 ? 1 : -1;
+  int err = dx + dy;
+
+  for (;;) {
+    canvasSetPixel(x0, y0);
+    canvasSetPixel(x0 + 1, y0);
+    canvasSetPixel(x0, y0 + 1);
+    if (x0 == x1 && y0 == y1) break;
+    int e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
   }
-  segs[segCount++] = {(int16_t)x1, (int16_t)y1, (int16_t)x2, (int16_t)y2};
+  canvasDirty = true;
+}
+
+void addDrawLine(int x1, int y1, int x2, int y2) {
+  canvasDrawLine(
+    clampi(x1, 0, OLED_W - 1), clampi(y1, 0, OLED_H - 1),
+    clampi(x2, 0, OLED_W - 1), clampi(y2, 0, OLED_H - 1));
+}
+
+// Blits the whole canvas into the u8g2 frame buffer in one pass.
+void canvasBlit() {
+  for (int y = 0; y < OLED_H; y++) {
+    const uint8_t* row = canvas + y * CANVAS_STRIDE;
+    for (int bx = 0; bx < CANVAS_STRIDE; bx++) {
+      uint8_t bits = row[bx];
+      if (bits == 0) continue;  // most of a drawing is empty; skip fast
+      int baseX = bx << 3;
+      for (int b = 0; b < 8; b++) {
+        if (bits & (0x80 >> b)) u8g2.drawPixel(baseX + b, y);
+      }
+    }
+  }
 }
 
 // Bresenham line with solid pixels — avoids gaps on SSD1306 diagonals
@@ -655,12 +798,34 @@ void drawLineSolid(int x0, int y0, int x1, int y1) {
   }
 }
 
+// Queues one segment from the BLE callback.  Must stay allocation-free and
+// non-blocking: it runs on the NimBLE host task.
 bool parseDrawPayload(const char* s) {
   // Exact format: "X1,Y1,X2,Y2"
   int x1, y1, x2, y2;
   if (sscanf(s, "%d,%d,%d,%d", &x1, &y1, &x2, &y2) != 4) return false;
-  addDrawLine(x1, y1, x2, y2);
+
+  uint8_t head = drawQueueHead;
+  uint8_t next = (uint8_t)((head + 1) & DRAW_QUEUE_MASK);
+  if (next == drawQueueTail) {
+    // Ring full — loop() is behind.  Drop the newest rather than block the BLE
+    // host task, and count it so the HW info screen can show it.
+    drawDroppedCount++;
+    return false;
+  }
+  drawQueue[head] = {(int16_t)x1, (int16_t)y1, (int16_t)x2, (int16_t)y2};
+  drawQueueHead = next;
   return true;
+}
+
+// Drains every queued segment.  Called once per loop() with no throttle: the
+// rasteriser is pure memory writes, so there is nothing to protect it from.
+void drainDrawQueue() {
+  while (drawQueueTail != drawQueueHead) {
+    DrawSegment seg = drawQueue[drawQueueTail];
+    drawQueueTail = (uint8_t)((drawQueueTail + 1) & DRAW_QUEUE_MASK);
+    if (drawMode) addDrawLine(seg.x1, seg.y1, seg.x2, seg.y2);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1491,35 +1656,48 @@ void drawIdleAnimByIndex(int idx, uint32_t t) {
   }
 }
 
+// Weather/time mood biases the weighted draw: a gloomy value leans toward calm
+// faces, a bright one toward lively faces.  This is a bias and never a filter —
+// every animation keeps a weight of at least 1, so nothing in the pool becomes
+// unreachable no matter how extreme the mood is.
+int moodAdjustedWeight(int idx) {
+  int w = IDLE_ANIM_WEIGHTS[idx];
+  // Positive when the animation agrees with the mood, negative when it opposes.
+  const int bias = weatherMood * IDLE_ANIM_ENERGY[idx];  // -2 .. +2
+  w = (w * (4 + bias)) / 4;                              // 0.5x .. 1.5x
+  return w < 1 ? 1 : w;
+}
+
 int pickNextIdleAnim() {
-  bool night = isNightTime();
+  const bool night = isNightTime();
+  const int  poolCount = night ? NIGHT_SAFE_COUNT : IDLE_ANIM_COUNT;
+  const int  fallback  = night ? NIGHT_SAFE_ANIMS[0] : 0;
 
-  if (night) {
-    // Night: pick from calm pool only
-    int pick = NIGHT_SAFE_ANIMS[esp_random() % NIGHT_SAFE_COUNT];
-    if (pick == currentIdleAnim && NIGHT_SAFE_COUNT > 1) {
-      pick = NIGHT_SAFE_ANIMS[(esp_random() % (NIGHT_SAFE_COUNT - 1) + 1) % NIGHT_SAFE_COUNT];
-    }
-    return pick;
-  }
-
-  // Daytime: weighted random selection
   int totalWeight = 0;
-  for (int i = 0; i < IDLE_ANIM_COUNT; i++) totalWeight += IDLE_ANIM_WEIGHTS[i];
-
-  int roll = esp_random() % totalWeight;
-  int cumulative = 0;
-  for (int i = 0; i < IDLE_ANIM_COUNT; i++) {
-    cumulative += IDLE_ANIM_WEIGHTS[i];
-    if (roll < cumulative) {
-      // Don't repeat the same animation twice in a row
-      if (i == currentIdleAnim && IDLE_ANIM_COUNT > 1) {
-        return (i + 1 + (esp_random() % (IDLE_ANIM_COUNT - 1))) % IDLE_ANIM_COUNT;
-      }
-      return i;
-    }
+  for (int i = 0; i < poolCount; i++) {
+    totalWeight += moodAdjustedWeight(night ? NIGHT_SAFE_ANIMS[i] : i);
   }
-  return 0;
+  if (totalWeight <= 0) return fallback;
+
+  // Two draws: the first is rejected if it repeats the current animation.
+  // The old index arithmetic could still land back on the same animation when
+  // drawing from the night pool, because it offset the *pool slot* and then
+  // indexed the animation table with it.
+  int pick = fallback;
+  for (int attempt = 0; attempt < 2; attempt++) {
+    const int roll = esp_random() % totalWeight;
+    int cumulative = 0;
+    for (int i = 0; i < poolCount; i++) {
+      const int anim = night ? NIGHT_SAFE_ANIMS[i] : i;
+      cumulative += moodAdjustedWeight(anim);
+      if (roll < cumulative) {
+        pick = anim;
+        break;
+      }
+    }
+    if (pick != currentIdleAnim || poolCount <= 1) break;
+  }
+  return pick;
 }
 
 // Master idle animation wrapper with blink-wipe transitions
@@ -2440,9 +2618,7 @@ void drawAppModeScreen(uint32_t t) {
     return;
   }
   if (drawMode) {
-    for (int i = 0; i < segCount; i++) {
-      drawLineSolid(segs[i].x1, segs[i].y1, segs[i].x2, segs[i].y2);
-    }
+    canvasBlit();
     u8g2.setFont(u8g2_font_4x6_tr);
     u8g2.drawStr(2, 7, "DRAW 2x=exit");
     return;
@@ -2591,6 +2767,20 @@ void renderFrame() {
   uint32_t now = millis();
   uint32_t inState = now - stateEnteredAt;
 
+  // Drawing mode is a still image — the only thing on screen that ever changes
+  // is the canvas itself.  Re-sending an identical 1 KB framebuffer costs ~23 ms
+  // of *blocking* I2C, and for that whole time loop() cannot drain the segment
+  // queue or sample the touch pin.  Skipping the redundant transfer is the
+  // single biggest win for perceived draw latency, and it makes touch feel
+  // instant while a drawing is on screen.
+  const bool drawStill = drawMode && !menuOpen &&
+                         blePairState == BLE_PAIR_IDLE &&
+                         state == STATE_APP_MODE &&
+                         displayMode == DISPLAY_NORMAL;
+  static bool prevDrawStill = false;
+  if (drawStill && prevDrawStill && !canvasDirty) return;
+  prevDrawStill = drawStill;
+
   u8g2.clearBuffer();
   u8g2.setDrawColor(1);
 
@@ -2636,6 +2826,7 @@ void renderFrame() {
     }
   }
 
+  canvasDirty = false;
   u8g2.sendBuffer();
 }
 
@@ -2643,73 +2834,119 @@ void renderFrame() {
 // Sensors
 // ═══════════════════════════════════════════════════════════════════════════
 
-bool readTouch() {
-  if (!touchEnabled) return false;
-  return digitalRead(PIN_TOUCH) == HIGH;
+// Raw pin level, normalised so `true` always means "finger present" regardless
+// of whether the breakout is active-high or active-low.
+inline bool readTouchPin() {
+  return (digitalRead(PIN_TOUCH) == HIGH) != touchIdleLevel;
 }
 
-bool readShake() {
+// Debounced touch level.  Must be called often; `pollSensors` runs it at 50 Hz.
+void updateTouchDebounce(uint32_t now) {
+  bool raw = readTouchPin();
+  if (raw != rawTouchLevel) {
+    rawTouchLevel = raw;
+    rawTouchChangedAt = now;
+    return;
+  }
+  if (raw != touchStable && (now - rawTouchChangedAt) >= touchDebounceMs) {
+    touchStable = raw;
+  }
+}
+
+bool readTouch() {
+  if (!touchEnabled) return false;
+  return touchStable;
+}
+
+// Non-blocking MPU (re)initialisation with exponential backoff.
+//
+// Nothing here may call delay() or change the I2C clock permanently: the OLED
+// shares this bus, and the old retry path dropped it to 100 kHz and only
+// restored 400 kHz on success — so a missing MPU left every sendBuffer() taking
+// ~92 ms instead of ~23 ms.  That single line was the drawing latency.
+void tryInitMpu(uint32_t now) {
+  uint32_t backoff = MPU_RETRY_MS * (1u << (mpuRetryCount > 4 ? 4 : mpuRetryCount));
+  if (now - lastMpuRetryAt < backoff) return;
+  lastMpuRetryAt = now;
+
+  mpuOk = mpu.begin(0x68, &Wire);
+  if (!mpuOk) mpuOk = mpu.begin(0x69, &Wire);
+
+  if (mpuOk) {
+    mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
+    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+    mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
+    gravityReady = false;
+    shakeHits = 0;
+    mpuRetryCount = 0;
+    Serial.println("[MPU] Reconnected");
+  } else if (mpuRetryCount < 4) {
+    mpuRetryCount++;
+  }
+  // Whatever happened, the bus goes back to full speed before we return.
+  Wire.setClock(400000);
+}
+
+// Samples the MPU at a fixed cadence and reports whether a *shake* — several
+// jolts inside a short window, not one bump — has just been recognised.
+bool pollMotion(uint32_t now) {
+  if (now - lastMotionPollAt < MOTION_POLL_MS) return false;
+  lastMotionPollAt = now;
+
   if (!mpuOk) {
-    // Periodically retry MPU init if it failed at boot
-    uint32_t now = millis();
-    if (now - lastMpuRetryAt > MPU_RETRY_MS) {
-      lastMpuRetryAt = now;
-      Serial.println("[MPU] Retrying init...");
-      Wire.begin(PIN_SDA, PIN_SCL);
-      Wire.setClock(100000);
-      mpuOk = mpu.begin(0x68, &Wire);
-      if (!mpuOk) mpuOk = mpu.begin(0x69, &Wire);
-      if (mpuOk) {
-        mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-        mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-        mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-        Wire.setClock(400000);
-        mpuBaselineReady = false;
-        Serial.println("[MPU] Reconnected!");
-      }
-    }
+    tryInitMpu(now);
     return false;
   }
 
   sensors_event_t a, g, temp;
   if (!mpu.getEvent(&a, &g, &temp)) {
-    // I2C read failed — try bus recovery
-    Serial.println("[MPU] I2C read failed, recovering...");
-    Wire.end();
-    delay(5);
-    Wire.begin(PIN_SDA, PIN_SCL);
-    Wire.setClock(400000);
-    mpuOk = false;  // will retry on next call
+    mpuOk = false;   // reinitialise on the next tick, without touching the clock
+    gravityReady = false;
     return false;
   }
 
-  float mag = sqrtf(a.acceleration.x * a.acceleration.x +
-                    a.acceleration.y * a.acceleration.y +
-                    a.acceleration.z * a.acceleration.z);
-  float gForce = mag / 9.80665f;
-  
-  float gyroDps = sqrtf(g.gyro.x * g.gyro.x + g.gyro.y * g.gyro.y +
-                        g.gyro.z * g.gyro.z) * 57.29578f;
+  // Slow EMA of the acceleration vector ≈ gravity, so tilting the robot does not
+  // register as movement but shaking it does.
+  if (!gravityReady) {
+    gravityX = a.acceleration.x;
+    gravityY = a.acceleration.y;
+    gravityZ = a.acceleration.z;
+    gravityReady = true;
+    return false;
+  }
+  const float alpha = 0.06f;   // ~0.3 s time constant at 50 Hz
+  gravityX += (a.acceleration.x - gravityX) * alpha;
+  gravityY += (a.acceleration.y - gravityY) * alpha;
+  gravityZ += (a.acceleration.z - gravityZ) * alpha;
 
-  // Establish baseline on first valid reads
-  if (!mpuBaselineReady) {
-    mpuBaselineG = gForce;
-    mpuBaselineReady = true;
+  const float rx = a.acceleration.x - gravityX;
+  const float ry = a.acceleration.y - gravityY;
+  const float rz = a.acceleration.z - gravityZ;
+  const float residual = sqrtf(rx * rx + ry * ry + rz * rz);
+  lastMotionResidual = residual;
+
+  const float gyroDps =
+      sqrtf(g.gyro.x * g.gyro.x + g.gyro.y * g.gyro.y + g.gyro.z * g.gyro.z) *
+      57.29578f;
+
+  const bool jolt = (residual > SHAKE_ACCEL_MS2) || (gyroDps > SHAKE_GYRO_DPS);
+
+  // Expire a stale window so scattered bumps never accumulate into a shake.
+  if (shakeHits > 0 && (now - shakeWindowStart) > SHAKE_WINDOW_MS) {
+    shakeHits = 0;
   }
 
-  // Advanced shake detection: combine absolute threshold + delta from baseline + gyro spike
-  float deltaG = fabsf(gForce - mpuBaselineG);
-  
-  // Slowly adapt baseline to handle orientation changes (low-pass filter)
-  mpuBaselineG = mpuBaselineG * 0.995f + gForce * 0.005f;
-
-  // Shake detected if: total g-force exceeds threshold OR sudden delta from baseline OR high rotation
-  bool shook = (gForce > SHAKE_THRESHOLD) || (deltaG > SHAKE_DELTA_G) || (gyroDps > SHAKE_GYRO_DPS);
-  
-  if (shook) {
-    Serial.printf("[MPU] SHAKE! g=%.2f delta=%.2f gyro=%.0f\n", gForce, deltaG, gyroDps);
+  if (jolt && (now - lastShakeHitAt) >= SHAKE_HIT_GAP_MS) {
+    lastShakeHitAt = now;
+    if (shakeHits == 0) shakeWindowStart = now;
+    shakeHits++;
+    if (shakeHits >= SHAKE_HITS_NEEDED) {
+      shakeHits = 0;
+      Serial.printf("[MPU] SHAKE res=%.2f gyro=%.0f\n", residual, gyroDps);
+      return true;
+    }
   }
-  return shook;
+  return false;
 }
 
 int readBatteryPercent() {
@@ -2745,92 +2982,150 @@ void exitDrawModeFromTouch() {
   }
 }
 
+// Advances the menu selection.  Shared by the hold-to-scroll repeat and by any
+// future rotary/button input.
+void menuScrollNext() {
+  if (!menuOpen) return;
+  menuIndex = (menuIndex + 1) % MENU_COUNT;
+  playCustomSound(SOUND_TAP, sizeof(SOUND_TAP) / sizeof(SOUND_TAP[0]));
+}
+
+void goHomeFromTouch() {
+  focusActive = false;
+  drawMode = false;
+  displayMode = DISPLAY_NORMAL;
+  menuOpen = false;
+  stopwatchText[0] = '\0';
+  enterState(STATE_IDLE);
+}
+
+// Gesture map:
+//   1 tap  → select / confirm
+//   2 taps → open menu
+//   3 taps → back / exit
 void handleTouchGesture(int tapCount) {
   if (tapCount <= 0) return;
   lastGestureAt = millis();
+  if (tapCount > 3) tapCount = 3;   // clamp: a 4th tap is still "back"
 
-  // Drawing mode: double-tap exits
-  if (drawMode && tapCount == 2) {
-    exitDrawModeFromTouch();
+  // Drawing mode owns the screen; only "back" leaves it.
+  if (drawMode) {
+    if (tapCount >= 2) exitDrawModeFromTouch();
     return;
   }
 
   if (menuOpen) {
     if (tapCount == 1) {
-      menuIndex = (menuIndex + 1) % MENU_COUNT;
-    } else if (tapCount == 2) {
-      menuIndex = (menuIndex - 1 + MENU_COUNT) % MENU_COUNT;
-    } else if (tapCount >= 3) {
+      playCustomSound(SOUND_MENU_SELECT,
+                      sizeof(SOUND_MENU_SELECT) / sizeof(SOUND_MENU_SELECT[0]));
       applyMenuSelection();
+    } else if (tapCount == 2) {
+      // Already in the menu — a second "open" just moves on.
+      menuScrollNext();
+    } else {
+      menuOpen = false;
+      playCustomSound(SOUND_TAP, sizeof(SOUND_TAP) / sizeof(SOUND_TAP[0]));
     }
+    return;
+  }
+
+  if (tapCount == 2) {
+    menuOpen = true;
+    menuIndex = 0;
+    playCustomSound(SOUND_MENU_OPEN,
+                    sizeof(SOUND_MENU_OPEN) / sizeof(SOUND_MENU_OPEN[0]));
     return;
   }
 
   if (tapCount >= 3) {
-    menuOpen = true;
-    menuIndex = 0;
+    // Back: leave whatever screen we are on, or go home from the face.
+    if (displayMode != DISPLAY_NORMAL || focusActive) {
+      goHomeFromTouch();
+    }
+    playCustomSound(SOUND_TAP, sizeof(SOUND_TAP) / sizeof(SOUND_TAP[0]));
     return;
   }
 
-  // Menu screens own the full OLED. Only the normal idle face reacts to a
-  // pet/tickle tap, so an opened option is never replaced by a face.
+  // Single tap on the plain idle face is a pet, not a navigation event.
   if (tapCount == 1 && state == STATE_IDLE &&
-      displayMode == DISPLAY_NORMAL && !drawMode && !focusActive) {
+      displayMode == DISPLAY_NORMAL && !focusActive) {
     enterState(STATE_TICKLED);
   }
 }
 
-void pollTouchGestures() {
-  if (!touchEnabled) return;
+void pollTouchGestures(uint32_t now) {
+  updateTouchDebounce(now);
+  if (!touchEnabled) {
+    // Keep the edge tracker consistent so re-enabling touch does not
+    // immediately fire a phantom release.
+    touchWasActive = false;
+    pendingTapCount = 0;
+    holdScrollActive = false;
+    return;
+  }
 
-  uint32_t now = millis();
-  bool pressed = readTouch();
+  const bool pressed = touchStable;
 
-  // A long hold always returns to the main animated face, from the menu or
-  // any option. It is deliberately not a tap, so no accidental action fires.
   if (pressed && touchWasActive) {
-    uint32_t holdDuration = now - touchDownAt;
-    if (holdDuration >= LONG_PRESS_MS && !longPressTriggered) {
+    const uint32_t held = now - touchDownAt;
+
+    // 2 s hold always goes home, from anywhere, and is never counted as a tap.
+    if (held >= LONG_PRESS_MS && !longPressTriggered) {
       longPressTriggered = true;
-      focusActive = false;
-      drawMode = false;
-      displayMode = DISPLAY_NORMAL;
-      menuOpen = false;
-      stopwatchText[0] = '\0';
-      enterState(STATE_IDLE);
+      holdScrollActive = false;
+      pendingTapCount = 0;
+      goHomeFromTouch();
+      playCustomSound(SOUND_TAP, sizeof(SOUND_TAP) / sizeof(SOUND_TAP[0]));
       touchWasActive = pressed;
-      return;  // Skip tap processing this cycle
+      return;
+    }
+
+    // Between HOLD_SCROLL_MS and LONG_PRESS_MS a hold scrolls the menu,
+    // repeating so the user can run down a list without lifting a finger.
+    if (!longPressTriggered && menuOpen && held >= HOLD_SCROLL_MS) {
+      if (!holdScrollActive) {
+        holdScrollActive = true;
+        lastHoldScrollAt = now;
+        menuScrollNext();
+      } else if (now - lastHoldScrollAt >= HOLD_REPEAT_MS) {
+        lastHoldScrollAt = now;
+        menuScrollNext();
+      }
     }
   }
 
   if (pressed && !touchWasActive) {
-    touchActive = true;
     touchDownAt = now;
-    longPressTriggered = false;  // Reset on new press
+    longPressTriggered = false;
+    holdScrollActive = false;
   }
 
   if (!pressed && touchWasActive) {
-    touchActive = false;
     touchUpAt = now;
-    uint32_t held = touchUpAt - touchDownAt;
-    // Don't register taps from a long-press release
-    if (longPressTriggered) {
+    const uint32_t held = touchUpAt - touchDownAt;
+    if (longPressTriggered || holdScrollActive) {
+      // The press was consumed as a hold; do not also count it as a tap.
       longPressTriggered = false;
+      holdScrollActive = false;
+      pendingTapCount = 0;
     } else if (held <= TAP_MAX_MS) {
-      if (pendingTapCount == 0) tapWindowStart = touchUpAt;
-      if (touchUpAt - tapWindowStart <= TAP_GAP_MS * 3) {
+      // Grouping is driven by TAP_SETTLE_MS below — the gesture cannot fire
+      // while a finger is down, so a slow multi-tap still arrives in time.
+      // This gap check is only a backstop against a stuck reading.  The old code
+      // compared against the window start with a x3 fudge factor, which merged
+      // unrelated taps minutes apart into one gesture.
+      if (pendingTapCount > 0 && (touchUpAt - tapWindowStart) <= TAP_GAP_MS) {
         pendingTapCount++;
       } else {
         pendingTapCount = 1;
-        tapWindowStart = touchUpAt;
       }
+      tapWindowStart = touchUpAt;
     }
   }
 
   touchWasActive = pressed;
 
-  if (pendingTapCount > 0 && !pressed &&
-      now - touchUpAt >= TAP_SETTLE_MS) {
+  if (pendingTapCount > 0 && !pressed && (now - touchUpAt) >= TAP_SETTLE_MS) {
     handleTouchGesture(pendingTapCount);
     pendingTapCount = 0;
   }
@@ -2838,28 +3133,38 @@ void pollTouchGestures() {
 
 void pollSensors() {
   uint32_t now = millis();
-  if (now - lastSensorAt < SENSOR_MS) return;
-  lastSensorAt = now;
 
-  pollTouchGestures();
-  pollBattery();
+  // Touch is polled every loop iteration, not on the SENSOR_MS tick: at 20 ms
+  // granularity a quick tap could fall entirely between two samples.
+  pollTouchGestures(now);
+
+  // Motion is sampled on its own fixed cadence and, crucially, regardless of
+  // the current state.  Previously the MPU was only read when a shake was
+  // already allowed, so the filter had no history and the retry path never ran.
+  const bool shookNow = pollMotion(now);
+
+  if (now - lastSensorAt >= SENSOR_MS) {
+    lastSensorAt = now;
+    pollBattery();
+  }
 
   // Touch wakes BLINK from yawn / sleep (any touch, not just tap)
   if (state == STATE_YAWN || state == STATE_SLEEP) {
     if (readTouch()) {
       menuOpen = false;
+      playCustomSound(SOUND_WAKE, sizeof(SOUND_WAKE) / sizeof(SOUND_WAKE[0]));
       enterState(focusActive || drawMode ? STATE_APP_MODE : STATE_IDLE);
     }
     return;
   }
 
-  // Skip emotions while menu is open
   if (menuOpen) return;
 
-  // Shake → dizzy (MPU6050 or BLE SHAKE command)
-  bool allowShake = (state == STATE_IDLE || state == STATE_APP_MODE ||
-                     state == STATE_TICKLED);
-  if (allowShake && now - lastShakeAt > SHAKE_COOLDOWN_MS && readShake()) {
+  // Shake → dizzy.  The cooldown is checked after sampling so the detector keeps
+  // its window state up to date while recovering.
+  const bool allowShake = (state == STATE_IDLE || state == STATE_APP_MODE ||
+                           state == STATE_TICKLED);
+  if (shookNow && allowShake && (now - lastShakeAt) > SHAKE_COOLDOWN_MS) {
     lastShakeAt = now;
     enterState(STATE_DIZZY);
   }
@@ -2976,11 +3281,29 @@ class CmdCallbacks : public NimBLECharacteristicCallbacks {
 
 class DrawCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& /*connInfo*/) override {
-    std::string v = c->getValue();
-    if (v.empty() || v.size() >= sizeof(drawBuf)) return;
-    memcpy((void*)drawBuf, v.c_str(), v.size());
-    drawBuf[v.size()] = '\0';
-    pendingDraw = true;
+    const std::string v = c->getValue();
+    if (v.empty()) return;
+
+    // Parsed straight into the lock-free ring.  There is no staging slot any
+    // more: the old single `drawBuf` was overwritten by the next write long
+    // before loop() ever read it, so a fast stroke lost almost every segment
+    // and arrived on the panel as disconnected dots.
+    //
+    // Rasterising is still deferred to loop() — this runs on the NimBLE host
+    // task, which must not be blocked.
+    char buf[80];
+    const size_t len = v.size() < sizeof(buf) - 1 ? v.size() : sizeof(buf) - 1;
+    memcpy(buf, v.data(), len);
+    buf[len] = '\0';
+
+    // Tolerate several segments packed into one write, separated by ';'.
+    char* cursor = buf;
+    while (cursor != nullptr && *cursor != '\0') {
+      char* sep = strchr(cursor, ';');
+      if (sep != nullptr) *sep = '\0';
+      if (*cursor != '\0') parseDrawPayload(cursor);
+      cursor = (sep != nullptr) ? sep + 1 : nullptr;
+    }
   }
 };
 
@@ -3048,6 +3371,8 @@ void handlePendingBle() {
     //   DRAW:OFF / CLEAR     — clear canvas / leave draw
     //   SW:MM:SS             — stopwatch overlay text
     //   TOUCH:ON / TOUCH:OFF
+    //   SENS:LOW|MED|HIGH    — touch debounce window (60 / 25 / 10 ms)
+    //   BRIGHT:<0-255>       — OLED contrast
     //   SOUND:TEST           — play the fitted passive-buzzer melody
     //   RESET / FACTORY / FACTORY_RESET — clear canvas, exit modes, replay BLINK boot
     if (strcmp(cmdBuf, "FOCUS:DONE") == 0) {
@@ -3079,8 +3404,13 @@ void handlePendingBle() {
       bool on = true;
       if (strstr(cmdBuf, "OFF") != nullptr) on = false;
       drawMode = on;
+      // Force one full redraw on the mode change; renderFrame() otherwise skips
+      // identical frames while a drawing is on screen.
+      canvasDirty = true;
       if (on) {
         focusActive = false;
+        displayMode = DISPLAY_NORMAL;
+        menuOpen = false;
         if (state == STATE_IDLE || state == STATE_APP_MODE) enterState(STATE_APP_MODE);
       } else if (!focusActive) {
         enterState(STATE_IDLE);
@@ -3105,6 +3435,18 @@ void handlePendingBle() {
       enterState(STATE_DIZZY);
     } else if (strcmp(cmdBuf, "TOUCH:OFF") == 0) {
       touchEnabled = false;
+    } else if (strncmp(cmdBuf, "SENS:", 5) == 0) {
+      const char* level = cmdBuf + 5;
+      if (strcmp(level, "HIGH") == 0) {
+        touchDebounceMs = 10;   // reacts to the lightest brush
+      } else if (strcmp(level, "LOW") == 0) {
+        touchDebounceMs = 60;   // ignores glancing contact
+      } else {
+        touchDebounceMs = TOUCH_DEBOUNCE_MS;  // MED / anything unrecognised
+      }
+    } else if (strncmp(cmdBuf, "BRIGHT:", 7) == 0) {
+      displayContrast = (uint8_t)clampi(atoi(cmdBuf + 7), 0, 255);
+      u8g2.setContrast(displayContrast);
     } else if (strcmp(cmdBuf, "SOUND:TEST") == 0) {
       playCustomSound(SOUND_BOOT, sizeof(SOUND_BOOT) / sizeof(SOUND_BOOT[0]));
     } else if (strcmp(cmdBuf, "SOUND:STOP") == 0) {
@@ -3169,22 +3511,18 @@ void handlePendingBle() {
     }
   }
 
-  if (pendingDraw) {
-    pendingDraw = false;
-    // Only process draw data if draw mode was explicitly enabled via DRAW command
-    // This prevents stray/leftover BLE packets from auto-enabling draw mode
-    // Throttle draw processing to avoid overwhelming the OLED
-    static uint32_t lastDrawProcessAt = 0;
-    if (drawMode && (millis() - lastDrawProcessAt >= DRAW_BLE_THROTTLE_MS)) {
-      lastDrawProcessAt = millis();
-      parseDrawPayload(drawBuf);
-    }
-  }
+  // Segments are rasterised here, once per loop iteration, with no throttle.
+  // Throttling used to *discard* whatever arrived inside the window instead of
+  // deferring it; the ring buffer makes deferral free, so every segment lands.
+  drainDrawQueue();
 }
 
 void setupBle() {
   NimBLEDevice::init(DEVICE_NAME);
-  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  // NimBLE 2.x takes dBm directly: setPower(int8_t dbm, NimBLETxPowerType).
+  // Passing ESP_PWR_LVL_P9 still compiled (unscoped enum -> int8_t) but set the
+  // enum's *ordinal* (7) as the dBm value instead of +9 dBm.
+  NimBLEDevice::setPower(9);
 
   bleServer = NimBLEDevice::createServer();
   bleServer->setCallbacks(new ServerCallbacks());
@@ -3216,6 +3554,11 @@ void setupBle() {
       NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   otaControlChar->setCallbacks(new OtaControlCallbacks());
 
+  // Deliberately WRITE only, with no WRITE_NR.  An ATT Write Request forces the
+  // phone to wait for a response before sending the next chunk, which is free
+  // end-to-end flow control for the flash write — and it makes it impossible for
+  // the app to regress to Write Command, where NimBLE would silently drop
+  // packets and the transfer would fail the length check at END.
   otaDataChar = service->createCharacteristic(
       OTA_DATA_UUID,
       NIMBLE_PROPERTY::WRITE);
@@ -3238,7 +3581,11 @@ void setupBle() {
 }
 
 void setupSensors() {
-  pinMode(PIN_TOUCH, INPUT);
+  // INPUT_PULLDOWN, not bare INPUT.  GPIO4 floats when nothing drives it, so a
+  // plain INPUT let the pin drift and read HIGH from stray capacitance — the
+  // gesture engine then saw a permanently-held finger and never produced a
+  // single clean tap.  This was the whole reason touch "did not work".
+  pinMode(PIN_TOUCH, INPUT_PULLDOWN);
   if (PIN_BUZZER >= 0) {
     pinMode(PIN_BUZZER, OUTPUT);
     noTone(PIN_BUZZER);
@@ -3254,9 +3601,24 @@ void setupSensors() {
   Wire.setClock(100000);  // start at 100kHz for reliable init
 
   u8g2.begin();
-  u8g2.setContrast(255);
+  u8g2.setContrast(displayContrast);
   u8g2.clearBuffer();
   u8g2.sendBuffer();
+
+  // Learn the idle level of the touch pin.  A TTP223 module can be wired either
+  // active-high or active-low depending on the board, and some carry an inverted
+  // output; sampling at boot means either wiring works without a code change.
+  {
+    uint8_t highCount = 0;
+    for (uint8_t i = 0; i < 24; i++) {
+      if (digitalRead(PIN_TOUCH) == HIGH) highCount++;
+      delay(2);
+    }
+    touchIdleLevel = (highCount > 12);
+    rawTouchLevel = touchIdleLevel;
+    touchStable = false;
+    Serial.printf("[TOUCH] Idle level: %s\n", touchIdleLevel ? "HIGH" : "LOW");
+  }
 
   // MPU6050 initialization with robust I2C scan
   Serial.println("[MPU] Scanning I2C bus...");
@@ -3278,36 +3640,48 @@ void setupSensors() {
     mpuOk = mpu.begin(mpuAddr, &Wire);
     if (mpuOk) {
       Serial.printf("[MPU] MPU6050 OK @ 0x%02X\n", mpuAddr);
-      mpu.setAccelerometerRange(MPU6050_RANGE_4_G);  // 4G for desk shake sensitivity
+      // 4 g range keeps a desk-shake well inside scale while staying sensitive.
+      mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
       mpu.setGyroRange(MPU6050_RANGE_500_DEG);
       mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
       delay(150);  // warm-up
 
-      // Baseline calibration
-      float gSum = 0;
+      // Seed the gravity estimate with the resting orientation.  The detector
+      // subtracts this vector and thresholds what is left, so seeding it here
+      // means the very first shake after boot is detected instead of being
+      // swallowed while the EMA converges.
+      //
+      // The previous code averaged the *magnitude* into an adaptive baseline
+      // that kept chasing whatever motion was happening, so a sustained shake
+      // raised its own threshold and never tripped.
+      float sx = 0, sy = 0, sz = 0;
       int validReads = 0;
       for (int i = 0; i < 15; i++) {
         sensors_event_t a, g, temp;
         if (mpu.getEvent(&a, &g, &temp)) {
-          float mag = sqrtf(a.acceleration.x * a.acceleration.x +
-                            a.acceleration.y * a.acceleration.y +
-                            a.acceleration.z * a.acceleration.z);
-          gSum += mag / 9.80665f;
+          sx += a.acceleration.x;
+          sy += a.acceleration.y;
+          sz += a.acceleration.z;
           validReads++;
         }
         delay(15);
       }
       if (validReads > 0) {
-        mpuBaselineG = gSum / validReads;
-        mpuBaselineReady = true;
-        Serial.printf("[MPU] Baseline: %.2f g (%d samples)\n", mpuBaselineG, validReads);
+        gravityX = sx / validReads;
+        gravityY = sy / validReads;
+        gravityZ = sz / validReads;
+        gravityReady = true;
+        Serial.printf("[MPU] Gravity seed: %.2f %.2f %.2f m/s^2 (%d samples)\n",
+                      gravityX, gravityY, gravityZ, validReads);
       }
     } else {
       Serial.printf("[MPU] begin() failed at 0x%02X — will retry\n", mpuAddr);
     }
   }
 
-  // Speed up I2C now that init is done
+  // Speed up I2C now that init is done.  Everything after this point must leave
+  // the clock at 400 kHz: at 100 kHz a single sendBuffer() costs ~92 ms instead
+  // of ~23 ms, which is what made the OLED feel unusably laggy.
   Wire.setClock(400000);
 
   batteryPercent = readBatteryPercent();

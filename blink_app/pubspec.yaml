@@ -1,21 +1,35 @@
 name: blink_app
 description: BLINK - Desktop Robot Companion App
 publish_to: 'none'
-version: 5.0.0+1
+# versionCode is now derived from the build number below (see
+# android/app/build.gradle.kts).  It must stay ABOVE 2005, which is what the
+# old per-ABI split build produced for arm64 — otherwise Android refuses the
+# install as a downgrade.
+version: 5.1.0+3001
 
 environment:
-  sdk: ^3.5.0
+  # `Color.withValues()` is used ~107 times across lib/ and landed in Dart 3.6 /
+  # Flutter 3.27.  Declaring ^3.5.0 let `flutter pub get` succeed on an SDK that
+  # then failed to compile almost every widget file, which is a much more
+  # confusing failure than a resolver error.
+  sdk: ^3.6.0
+  flutter: '>=3.27.0'
 
 dependencies:
   flutter:
     sdk: flutter
   provider: ^6.1.2
-  flutter_blue_plus: ^1.35.5
+  # Pinned exactly.  1.36.x moved the Android implementation to jnigen/JNI,
+  # which resolves Java members reflectively and is fragile under R8.  Pin
+  # until that path is verified on a release build.
+  flutter_blue_plus: 1.35.5
   permission_handler: ^11.3.1
   flutter_local_notifications: ^18.0.1
   path_provider: ^2.1.5
   shared_preferences: ^2.3.3
   http: ^1.2.2
+  # Single source of truth for the displayed app version at runtime.
+  package_info_plus: ^8.1.2
 
 dev_dependencies:
   flutter_test:

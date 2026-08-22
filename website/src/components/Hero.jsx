@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion'
+import usePrefersReducedMotion from '../hooks/usePrefersReducedMotion'
 
 const floatingOrbs = [
   { size: '500px', top: '-10%', left: '-15%', color: 'rgba(99, 102, 241, 0.12)', duration: 20, x: 80, y: 100 },
@@ -7,11 +8,14 @@ const floatingOrbs = [
 ]
 
 export default function Hero() {
+  const reducedMotion = usePrefersReducedMotion()
+
   return (
-    <section style={{ position: 'relative', minHeight: '100vh', display: 'flex', alignItems: 'center', overflow: 'hidden', paddingTop: 'clamp(60px, 10vw, 80px)' }}>
+    <section id="top" style={{ position: 'relative', minHeight: '100vh', display: 'flex', alignItems: 'center', overflow: 'hidden', paddingTop: 'clamp(60px, 10vw, 80px)' }}>
       {floatingOrbs.map((orb, i) => (
         <motion.div
           key={i}
+          aria-hidden="true"
           style={{
             position: 'absolute',
             width: orb.size,
@@ -24,7 +28,10 @@ export default function Hero() {
             ...(orb.left ? { left: orb.left } : {}),
             ...(orb.right ? { right: orb.right } : {}),
           }}
-          animate={{ x: [0, orb.x, 0], y: [0, orb.y, 0] }}
+          // Three 500px radial gradients translating forever is the single
+          // biggest continuous cost on this page; drop it entirely when the
+          // visitor has asked for less motion.
+          animate={reducedMotion ? undefined : { x: [0, orb.x, 0], y: [0, orb.y, 0] }}
           transition={{ duration: orb.duration, repeat: Infinity, ease: 'easeInOut' }}
         />
       ))}
@@ -98,7 +105,7 @@ export default function Hero() {
               marginBottom: 32,
             }}
           >
-            A tiny, expressive companion powered by ESP32-C3, a crisp 0.96 OLED display, and motion sensing — all controlled from a beautiful Flutter companion app.
+            A tiny, expressive companion powered by ESP32-C3, a crisp 0.96&quot; OLED display, and motion sensing &mdash; all controlled from a beautiful Flutter companion app.
           </motion.p>
 
           <motion.div

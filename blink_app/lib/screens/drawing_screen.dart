@@ -39,7 +39,7 @@ class _DrawingScreenState extends State<DrawingScreen> {
       child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Draw', style: BlinkTypography.displayLarge),
+            const Text('Draw', style: BlinkTypography.displayLarge),
             const SizedBox(height: 4),
             Text(
               'PIXEL GRID · 128 × 64 OLED',

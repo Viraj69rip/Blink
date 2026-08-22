@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:provider/provider.dart';
 
 import '../models/robot_animation_snapshot.dart';
 import '../providers/robot_state_provider.dart';
 import '../theme/blink_constants.dart';
 import '../theme/blink_theme.dart';
+import '../utils/text_painter_cache.dart';
 
 /// Stylized robot face widget with animated blinking eyes.
 /// When connected, mirrors live ESP32 OLED state over BLE (~10 Hz + extrapolation).
@@ -29,8 +31,15 @@ class _RobotFaceState extends State<RobotFace> with TickerProviderStateMixin {
   Timer? _nextBlinkTimer;
   Timer? _nightCheckTimer;
   Timer? _sleepWakeTimer;
-  Timer? _sleepAnimTimer;
-  Timer? _syncRepaintTimer;
+
+  /// Repaint clock for the two states that animate off nothing but the wall
+  /// clock: a synced face (extrapolated between ~10 Hz snapshots) and the local
+  /// sleep loop. A [Ticker] rather than a `Timer.periodic` so the repaints land
+  /// on the frame pipeline instead of drifting against it, and so they stop
+  /// automatically while the app is backgrounded or this route is offscreen.
+  late final Ticker _ticker;
+  bool _tickerRunning = false;
+  Duration _lastTick = Duration.zero;
 
   double _sleepPhase = 0;
   bool _localNightYawn = false;
@@ -80,11 +89,36 @@ class _RobotFaceState extends State<RobotFace> with TickerProviderStateMixin {
 
     _scheduleNextBlink();
     _startNightChecks();
-    _syncRepaintTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
-      if (!mounted) return;
-      final synced = context.read<RobotStateProvider>().isRobotSynced;
-      if (synced) setState(() {});
-    });
+    _ticker = createTicker(_onTick);
+  }
+
+  /// Advances the wall-clock-driven parts of the face. [elapsed] is monotonic
+  /// from the moment the ticker started, so the sleep phase now tracks real
+  /// time instead of accumulating one timer callback's worth of drift each tick.
+  void _onTick(Duration elapsed) {
+    final dt = elapsed - _lastTick;
+    _lastTick = elapsed;
+    if (_localFaceState == RobotFaceState.sleep) {
+      // The old 50 ms timer added 0.05 per tick, i.e. exactly 1.0 per second —
+      // the same unit the synced path derives from `elapsedMs / 1000`.
+      setState(() => _sleepPhase += dt.inMicroseconds / 1000000.0);
+      return;
+    }
+    if (_wasSynced) setState(() {});
+  }
+
+  /// Runs the ticker only while something actually needs per-frame repaints.
+  void _syncTicker() {
+    final wanted =
+        _wasSynced || _localFaceState == RobotFaceState.sleep;
+    if (wanted == _tickerRunning) return;
+    _tickerRunning = wanted;
+    if (wanted) {
+      _lastTick = Duration.zero;
+      _ticker.start();
+    } else {
+      _ticker.stop();
+    }
   }
 
   @override
@@ -94,11 +128,11 @@ class _RobotFaceState extends State<RobotFace> with TickerProviderStateMixin {
     if (_wasSynced && !synced) {
       _localNightYawn = false;
       _yawnController.reset();
-      _sleepAnimTimer?.cancel();
       _sleepWakeTimer?.cancel();
       _scheduleNextBlink();
     }
     _wasSynced = synced;
+    _syncTicker();
   }
 
   RobotFaceState get _localFaceState {
@@ -136,21 +170,19 @@ class _RobotFaceState extends State<RobotFace> with TickerProviderStateMixin {
   void _enterLocalSleep() {
     _yawnController.stop();
     _sleepPhase = 0;
-    _sleepAnimTimer?.cancel();
-    _sleepAnimTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
-      if (!mounted || _localFaceState != RobotFaceState.sleep) return;
-      setState(() => _sleepPhase += 0.05);
-    });
     _sleepWakeTimer?.cancel();
     _sleepWakeTimer = Timer(BlinkConstants.sleepDuration, _wakeFromLocalSleep);
     setState(() {});
+    // Read after the timer is armed: `_localFaceState` only reports sleep once
+    // `_sleepWakeTimer` is active.
+    _syncTicker();
   }
 
   void _wakeFromLocalSleep() {
     if (!mounted) return;
     _localNightYawn = false;
-    _sleepAnimTimer?.cancel();
     setState(() {});
+    _syncTicker();
     _scheduleNextBlink();
   }
 
@@ -204,8 +236,7 @@ class _RobotFaceState extends State<RobotFace> with TickerProviderStateMixin {
     _nextBlinkTimer?.cancel();
     _nightCheckTimer?.cancel();
     _sleepWakeTimer?.cancel();
-    _sleepAnimTimer?.cancel();
-    _syncRepaintTimer?.cancel();
+    _ticker.dispose();
     _blinkController.dispose();
     _yawnController.dispose();
     super.dispose();
@@ -250,6 +281,14 @@ class _RobotFaceState extends State<RobotFace> with TickerProviderStateMixin {
         eyeOpen = 0;
       case RobotFaceState.appMode:
         eyeOpen = snapshot.focusActive ? 0.45 : 0.65;
+      case RobotFaceState.happy:
+        eyeOpen = 0.9;
+      case RobotFaceState.sad:
+        eyeOpen = 0.55;
+      case RobotFaceState.angry:
+        eyeOpen = 0.8;
+      case RobotFaceState.love:
+        eyeOpen = 1.0;
     }
 
     return RepaintBoundary(
@@ -366,10 +405,256 @@ class _RobotFacePainter extends CustomPainter {
       case RobotFaceState.appMode:
         _drawAppMode(canvas, size, centerX, centerY);
         return;
+      case RobotFaceState.happy:
+        _drawHappy(canvas, size, centerX, centerY);
+        return;
+      case RobotFaceState.sad:
+        _drawSad(canvas, size, centerX, centerY);
+        return;
+      case RobotFaceState.angry:
+        _drawAngry(canvas, size, centerX, centerY);
+        return;
+      case RobotFaceState.love:
+        _drawLove(canvas, size, centerX, centerY);
+        return;
       case RobotFaceState.yawn:
       case RobotFaceState.idle:
         _drawStandardFace(canvas, size, centerX, centerY);
     }
+  }
+
+  // ── Expression faces (firmware states 7–10) ──────────────────
+  //
+  // These mirror the shapes the OLED draws so the in-app preview and the robot
+  // read as the same character.  Kept deliberately simple: two eye forms plus a
+  // mouth curve, because that is all a 128×64 monochrome panel can express.
+
+  void _drawHappy(Canvas canvas, Size size, double cx, double cy) {
+    final bounce = sin(animMs / 260.0).abs() * 3;
+    final eyeY = cy - size.height * 0.06 - bounce;
+    final spacing = size.width * 0.12;
+    final arcPaint = Paint()
+      ..color = eyeColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+
+    // Happy eyes are upward arcs (^ ^), the classic Mochi smile-eye.
+    for (final offset in [-spacing, spacing]) {
+      final path = Path()
+        ..moveTo(cx + offset - 15, eyeY + 7)
+        ..quadraticBezierTo(cx + offset, eyeY - 11, cx + offset + 15, eyeY + 7);
+      canvas.drawPath(path, arcPaint);
+    }
+
+    final smilePaint = Paint()
+      ..color = mouthColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.6
+      ..strokeCap = StrokeCap.round;
+    canvas.drawArc(
+      Rect.fromCenter(
+        center: Offset(cx, cy + size.height * 0.13 + bounce * 0.5),
+        width: size.width * 0.2,
+        height: size.height * 0.14,
+      ),
+      0.15,
+      pi - 0.3,
+      false,
+      smilePaint,
+    );
+
+    final blush = Paint()..color = accentColor.withValues(alpha: 0.3);
+    canvas.drawCircle(Offset(cx - size.width * 0.21, cy + 6), 4, blush);
+    canvas.drawCircle(Offset(cx + size.width * 0.21, cy + 6), 4, blush);
+  }
+
+  void _drawSad(Canvas canvas, Size size, double cx, double cy) {
+    // Slow droop, plus a tear that falls and resets.
+    final droop = 2 + sin(animMs / 900.0) * 1.5;
+    final eyeY = cy - size.height * 0.03 + droop;
+    final spacing = size.width * 0.12;
+    final eyeWidth = size.width * 0.14;
+    final eyeHeight = size.height * 0.3 * eyeOpenness.clamp(0.0, 1.0);
+
+    final eyePaint = Paint()..color = eyeColor;
+    for (final offset in [-spacing, spacing]) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: Offset(cx + offset, eyeY),
+            width: eyeWidth,
+            height: eyeHeight.clamp(2.0, double.infinity),
+          ),
+          Radius.circular(eyeWidth * 0.3),
+        ),
+        eyePaint,
+      );
+    }
+
+    // Sad brows slope inward and down.
+    final browPaint = Paint()
+      ..color = eyeColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(
+      Offset(cx - spacing - eyeWidth * 0.7, eyeY - eyeHeight * 0.5 - 14),
+      Offset(cx - spacing + eyeWidth * 0.6, eyeY - eyeHeight * 0.5 - 6),
+      browPaint,
+    );
+    canvas.drawLine(
+      Offset(cx + spacing - eyeWidth * 0.6, eyeY - eyeHeight * 0.5 - 6),
+      Offset(cx + spacing + eyeWidth * 0.7, eyeY - eyeHeight * 0.5 - 14),
+      browPaint,
+    );
+
+    final tearProgress = (animMs % 2600) / 2600.0;
+    if (tearProgress < 0.75) {
+      final t = tearProgress / 0.75;
+      final tearPaint = Paint()
+        ..color = eyeColor.withValues(alpha: (1 - t).clamp(0.0, 1.0));
+      canvas.drawCircle(
+        Offset(cx + spacing, eyeY + eyeHeight * 0.5 + 6 + t * 26),
+        2.4,
+        tearPaint,
+      );
+    }
+
+    final frownPaint = Paint()
+      ..color = mouthColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round;
+    canvas.drawArc(
+      Rect.fromCenter(
+        center: Offset(cx, cy + size.height * 0.24),
+        width: size.width * 0.17,
+        height: size.height * 0.11,
+      ),
+      pi + 0.2,
+      pi - 0.4,
+      false,
+      frownPaint,
+    );
+  }
+
+  void _drawAngry(Canvas canvas, Size size, double cx, double cy) {
+    // Fast, small tremor — reads as tension without becoming dizzy.
+    final tremor = sin(animMs / 45.0) * 1.6;
+    final eyeY = cy - size.height * 0.04;
+    final spacing = size.width * 0.12;
+    final eyeWidth = size.width * 0.15;
+    final eyeHeight = size.height * 0.22 * eyeOpenness.clamp(0.0, 1.0);
+
+    final eyePaint = Paint()..color = eyeColor;
+    for (final offset in [-spacing, spacing]) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: Offset(cx + offset + tremor, eyeY),
+            width: eyeWidth,
+            height: eyeHeight.clamp(2.0, double.infinity),
+          ),
+          const Radius.circular(2),
+        ),
+        eyePaint,
+      );
+    }
+
+    // Heavy brows angled down toward the nose.
+    final browPaint = Paint()
+      ..color = accentColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.4
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(
+      Offset(cx - spacing - eyeWidth * 0.7 + tremor, eyeY - eyeHeight - 6),
+      Offset(cx - spacing + eyeWidth * 0.7 + tremor, eyeY - eyeHeight + 4),
+      browPaint,
+    );
+    canvas.drawLine(
+      Offset(cx + spacing - eyeWidth * 0.7 + tremor, eyeY - eyeHeight + 4),
+      Offset(cx + spacing + eyeWidth * 0.7 + tremor, eyeY - eyeHeight - 6),
+      browPaint,
+    );
+
+    // Gritted mouth: a short zigzag.
+    final mouthPaint = Paint()
+      ..color = mouthColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round;
+    final mouthY = cy + size.height * 0.2;
+    final halfWidth = size.width * 0.09;
+    final path = Path()..moveTo(cx - halfWidth + tremor, mouthY);
+    const steps = 4;
+    for (var i = 1; i <= steps; i++) {
+      final x = cx - halfWidth + (2 * halfWidth) * (i / steps) + tremor;
+      path.lineTo(x, mouthY + (i.isEven ? -3.5 : 3.5));
+    }
+    canvas.drawPath(path, mouthPaint);
+  }
+
+  void _drawLove(Canvas canvas, Size size, double cx, double cy) {
+    final pulse = 1 + sin(animMs / 320.0) * 0.12;
+    final eyeY = cy - size.height * 0.05;
+    final spacing = size.width * 0.12;
+
+    for (final offset in [-spacing, spacing]) {
+      _drawHeart(canvas, Offset(cx + offset, eyeY), 11 * pulse, eyeColor);
+    }
+
+    final smilePaint = Paint()
+      ..color = mouthColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.6
+      ..strokeCap = StrokeCap.round;
+    canvas.drawArc(
+      Rect.fromCenter(
+        center: Offset(cx, cy + size.height * 0.14),
+        width: size.width * 0.16,
+        height: size.height * 0.11,
+      ),
+      0.2,
+      pi - 0.4,
+      false,
+      smilePaint,
+    );
+
+    // Small hearts drifting up and fading.
+    for (var i = 0; i < 3; i++) {
+      final cycle = ((animMs / 1500.0 + i * 0.33) % 1.0);
+      final rise = Curves.easeOut.transform(cycle);
+      final hx = cx + size.width * (0.2 + i * 0.04) + sin(cycle * pi * 2) * 5;
+      final hy = cy - size.height * 0.05 - rise * 42;
+      _drawHeart(
+        canvas,
+        Offset(hx, hy),
+        3.5 + i,
+        accentColor.withValues(alpha: (1 - rise).clamp(0.0, 1.0) * 0.8),
+      );
+    }
+  }
+
+  /// Filled heart centred on [center] with half-width [r].
+  void _drawHeart(Canvas canvas, Offset center, double r, Color color) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+    final path = Path()..moveTo(center.dx, center.dy + r * 0.9);
+    path.cubicTo(
+      center.dx - r * 1.5, center.dy - r * 0.3,
+      center.dx - r * 0.55, center.dy - r * 1.3,
+      center.dx, center.dy - r * 0.35,
+    );
+    path.cubicTo(
+      center.dx + r * 0.55, center.dy - r * 1.3,
+      center.dx + r * 1.5, center.dy - r * 0.3,
+      center.dx, center.dy + r * 0.9,
+    );
+    path.close();
+    canvas.drawPath(path, paint);
   }
 
   void _drawStandardFace(Canvas canvas, Size size, double centerX, double centerY) {
@@ -541,16 +826,15 @@ class _RobotFacePainter extends CustomPainter {
 
   void _drawBoot(Canvas canvas, Size size) {
     final p = (animMs / 2200.0).clamp(0.0, 1.0);
-    final textStyle = TextStyle(
-      color: eyeColor,
-      fontSize: 28,
-      fontWeight: FontWeight.w700,
-      letterSpacing: 4,
+    final tp = cachedTextPainter(
+      'BLINK',
+      TextStyle(
+        color: eyeColor,
+        fontSize: 28,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 4,
+      ),
     );
-    final tp = TextPainter(
-      text: TextSpan(text: 'BLINK', style: textStyle),
-      textDirection: TextDirection.ltr,
-    )..layout();
     final y = size.height * 0.35 + (1 - Curves.easeOut.transform(p)) * 18;
     tp.paint(canvas, Offset((size.width - tp.width) / 2, y));
 
@@ -570,18 +854,15 @@ class _RobotFacePainter extends CustomPainter {
 
   void _drawAppMode(Canvas canvas, Size size, double cx, double cy) {
     if (drawMode) {
-      final label = TextPainter(
-        text: TextSpan(
-          text: 'DRAW',
-          style: TextStyle(
-            color: accentColor,
-            fontSize: 22,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 3,
-          ),
+      final label = cachedTextPainter(
+        'DRAW',
+        TextStyle(
+          color: accentColor,
+          fontSize: 22,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 3,
         ),
-        textDirection: TextDirection.ltr,
-      )..layout();
+      );
       label.paint(canvas, Offset((size.width - label.width) / 2, cy - 8));
       return;
     }
@@ -608,18 +889,15 @@ class _RobotFacePainter extends CustomPainter {
     }
 
     if (focusActive) {
-      final label = TextPainter(
-        text: TextSpan(
-          text: 'FOCUS',
-          style: TextStyle(
-            color: eyeColor,
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 2,
-          ),
+      final label = cachedTextPainter(
+        'FOCUS',
+        TextStyle(
+          color: eyeColor,
+          fontSize: 18,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 2,
         ),
-        textDirection: TextDirection.ltr,
-      )..layout();
+      );
       label.paint(canvas, Offset((size.width - label.width) / 2, cy + size.height * 0.08));
     }
   }
@@ -717,13 +995,10 @@ class _RobotFacePainter extends CustomPainter {
       final drift = Curves.easeInOut.transform(cycle);
       final x = cx + size.width * 0.12 + i * 14 + drift * 16;
       final y = cy - size.height * 0.18 - drift * 28 + sin(sleepPhase + i) * 2;
-      final tp = TextPainter(
-        text: TextSpan(
-          text: i.isEven ? 'z' : 'Z',
-          style: textStyle.copyWith(fontSize: 10.0 + i * 4.0),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
+      final tp = cachedTextPainter(
+        i.isEven ? 'z' : 'Z',
+        textStyle.copyWith(fontSize: 10.0 + i * 4.0),
+      );
       tp.paint(canvas, Offset(x, y));
     }
   }

@@ -58,7 +58,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       # Pinned to 3.27.4: the SDK floor is load-bearing (Color.withValues()
       # landed in 3.27), and the Android build config (AGP 9.0.1, Kotlin 2.3.20)

@@ -93,16 +93,7 @@ jobs:
       # that catches real breakage.
       - name: Build debug APK
         working-directory: blink_app
-        run: |
-          flutter build apk --debug > build_log.txt 2>&1 || (
-            git checkout -b debug-ci-log
-            git config user.name "github-actions"
-            git config user.email "actions@github.com"
-            git add build_log.txt
-            git commit -m "Add build log"
-            git push -f origin debug-ci-log
-            exit 1
-          )
+        run: flutter build apk --debug
 
   website:
     name: Website builds

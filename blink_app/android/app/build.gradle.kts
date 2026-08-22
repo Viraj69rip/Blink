@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.blink.companion"
-    compileSdk = 36
+    compileSdk = 35
     ndkVersion = "28.2.13676358"
 
     // NOTE: the manual `splits { abi { ... } }` block was removed.

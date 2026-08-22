@@ -5,7 +5,7 @@ allprojects {
     }
     afterEvaluate {
         val androidExt = extensions.findByType<com.android.build.gradle.BaseExtension>()
-        androidExt?.compileSdkVersion(36)
+        androidExt?.compileSdkVersion(35)
     }
 }
 

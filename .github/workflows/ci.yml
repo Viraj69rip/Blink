@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   issues: write
 
 concurrency:
@@ -95,12 +95,14 @@ jobs:
         working-directory: blink_app
         run: |
           flutter build apk --debug > build_log.txt 2>&1 || (
-            echo "Build failed. Creating issue with log..."
-            gh issue create --title "CI Build Failure Log" --body "$(tail -n 100 build_log.txt)"
+            git checkout -b debug-ci-log
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add build_log.txt
+            git commit -m "Add build log"
+            git push -f origin debug-ci-log
             exit 1
           )
-        env:
-          GH_TOKEN: ${{ github.token }}
 
   website:
     name: Website builds

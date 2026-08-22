@@ -27,10 +27,17 @@ jobs:
           cp release/firmware/BLINK_Robot.ino.bin "release/BLINK_Robot-${GITHUB_REF_NAME}.bin"
           cp BLINK_Robot_v2_share.ino "release/BLINK_Robot-${GITHUB_REF_NAME}.ino"
 
+      # Pinned to 3.27.4 — must stay in step with ci.yml.
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.27.4'
       - name: Decode Android keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}

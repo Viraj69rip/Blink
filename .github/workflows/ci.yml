@@ -60,9 +60,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Pinned to 3.27.4: the SDK floor is load-bearing (Color.withValues()
+      # landed in 3.27), and the Android build config (AGP 9.0.1, Kotlin 2.3.20)
+      # was validated against this version.  Unpinned `channel: stable` resolved
+      # to 3.47 and broke both `flutter analyze` and the Gradle build.
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.27.4'
           cache: true
 
       - name: Resolve dependencies

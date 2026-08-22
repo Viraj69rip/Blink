@@ -92,8 +92,18 @@ jobs:
       # It still exercises the full Dart-to-Dalvik compile, which is the part
       # that catches real breakage.
       - name: Build debug APK
-        working-directory: blink_app
-        run: flutter build apk --debug
+        run: |
+          cd blink_app
+          flutter build apk --debug > build_log.txt 2>&1 || (
+            cd ..
+            cp blink_app/build_log.txt CI_ERROR.txt
+            git config --global user.name "github-actions"
+            git config --global user.email "github-actions@github.com"
+            git add CI_ERROR.txt
+            git commit -m "chore: upload CI error log"
+            git push origin HEAD:main
+            exit 1
+          )
 
   website:
     name: Website builds

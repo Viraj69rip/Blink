@@ -69,6 +69,12 @@ jobs:
           flutter-version: '3.27.4'
           cache: true
 
+      - name: Patch Flutter for Gradle 9 compatibility
+        run: |
+          FLUTTER_DIR=$(dirname $(dirname $(which flutter)))
+          FLUTTER_GROOVY="$FLUTTER_DIR/packages/flutter_tools/gradle/src/main/groovy/flutter.groovy"
+          sed -i 's/import groovy.xml.QName/import groovy.namespace.QName/g' "$FLUTTER_GROOVY"
+
       - name: Resolve dependencies
         working-directory: blink_app
         run: flutter pub get

@@ -38,6 +38,12 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.27.4'
+          
+      - name: Patch Flutter for Gradle 9 compatibility
+        run: |
+          FLUTTER_DIR=$(dirname $(dirname $(which flutter)))
+          FLUTTER_GROOVY="$FLUTTER_DIR/packages/flutter_tools/gradle/src/main/groovy/flutter.groovy"
+          sed -i 's/import groovy.xml.QName/import groovy.namespace.QName/g' "$FLUTTER_GROOVY"
       - name: Decode Android keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}

@@ -19,6 +19,6 @@ Execution failed for task ':gradle:compileGroovy'.
 * Try:
 > Run with --scan to generate a Build Scan (Powered by Develocity).
 
-BUILD FAILED in 42s
-Running Gradle task 'assembleDebug'...                             43.4s
+BUILD FAILED in 43s
+Running Gradle task 'assembleDebug'...                             45.7s
 Gradle task assembleDebug failed with exit code 1

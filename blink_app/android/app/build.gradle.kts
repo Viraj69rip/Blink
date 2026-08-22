@@ -8,7 +8,7 @@ plugins {
 android {
     namespace = "com.blink.companion"
     compileSdk = 35
-    ndkVersion = "28.2.13676358"
+    ndkVersion = flutter.ndkVersion
 
     // NOTE: the manual `splits { abi { ... } }` block was removed.
     //

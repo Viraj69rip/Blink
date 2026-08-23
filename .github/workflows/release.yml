@@ -44,7 +44,7 @@ jobs:
           FLUTTER_GROOVY=$(find /opt/hostedtoolcache/flutter -name flutter.groovy | head -n 1)
           echo "Patching $FLUTTER_GROOVY for Gradle 9 (Groovy 4) compatibility..."
           sed -i 's/import groovy.xml.QName/import groovy.namespace.QName/g' "$FLUTTER_GROOVY"
-          sed -i '1s/^/import groovy.xml.XmlParser\n/' "$FLUTTER_GROOVY"
+          echo "import groovy.xml.XmlParser" | cat - "$FLUTTER_GROOVY" > temp && mv temp "$FLUTTER_GROOVY"
       - name: Decode Android keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}

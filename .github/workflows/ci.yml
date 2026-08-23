@@ -75,7 +75,7 @@ jobs:
           FLUTTER_GROOVY=$(find /opt/hostedtoolcache/flutter -name flutter.groovy | head -n 1)
           echo "Patching $FLUTTER_GROOVY for Gradle 9 (Groovy 4) compatibility..."
           sed -i 's/import groovy.xml.QName/import groovy.namespace.QName/g' "$FLUTTER_GROOVY"
-          sed -i '1s/^/import groovy.xml.XmlParser\n/' "$FLUTTER_GROOVY"
+          echo "import groovy.xml.XmlParser" | cat - "$FLUTTER_GROOVY" > temp && mv temp "$FLUTTER_GROOVY"
 
       - name: Resolve dependencies
         working-directory: blink_app
@@ -95,16 +95,7 @@ jobs:
       - name: Build debug APK
         run: |
           cd blink_app
-          flutter build apk --debug > build_log.txt 2>&1 || (
-            cd ..
-            cp blink_app/build_log.txt CI_ERROR.txt
-            git config --global user.name "github-actions"
-            git config --global user.email "github-actions@github.com"
-            git add CI_ERROR.txt
-            git commit -m "chore: upload CI error log"
-            git push origin HEAD:main
-            exit 1
-          )
+          flutter build apk --debug
 
   website:
     name: Website builds
